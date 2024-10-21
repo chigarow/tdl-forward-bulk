@@ -21,33 +21,31 @@ This project uses the Telegram CLI (`tdl`) to automate the forwarding of message
 1. **Clone the repository:**
 
        
-       ```
        git clone https://github.com/chigarow/tdl-forward-bulk
        cd tdl-forward-bulk
-       ```
 
 2. **Create a virtual environment:**
 
    It is recommended to use `venv` for isolating the project's dependencies.
 
-       ```
+       
        python3 -m venv venv
-       ```
+       
 3. **Activate the virtual environment:**
 
    - On macOS/Linux:
 
-         `source venv/bin/activate`
+         source venv/bin/activate
 
    - On Windows:
 
-         `.\venv\Scripts\activate`
+         .\venv\Scripts\activate
 
 4. **Install the required dependencies:**
 
    After activating the virtual environment, install the required Python packages by running:
 
-       `pip install -r requirements.txt`
+       pip install -r requirements.txt
 
    The only dependency currently listed is `psutil`.
 
@@ -70,7 +68,7 @@ This script reads URLs from a file (`url-forward.txt`) and forwards them using `
 
 2. **Run the script:**
 
-       `python3 py-tdl-forward.py`
+       python3 py-tdl-forward.py
 
    The script will process each URL and log the results. If a URL is successfully forwarded, it will be logged into the `done-url.txt` file.
 
