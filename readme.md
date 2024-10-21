@@ -22,8 +22,8 @@ This project uses the Telegram CLI (`tdl`) to automate the forwarding of message
 
        
        ```
-       git clone <your-repo-url>
-       cd <your-repo-name>
+       git clone https://github.com/chigarow/tdl-forward-bulk
+       cd tdl-forward-bulk
        ```
 
 2. **Create a virtual environment:**
