@@ -1,6 +1,7 @@
 import pyperclip
 import time
 import os
+from datetime import datetime, timezone, timedelta
 
 def ensure_newline_at_end(file_path):
     """Ensure the file ends with a newline character"""
@@ -16,6 +17,12 @@ def ensure_newline_at_end(file_path):
                 # If last character is not a newline, add one
                 if last_char != '\n':
                     file.write('\n')
+
+def get_timestamp_gmt7():
+    """Returns the current timestamp in GMT+7 format"""
+    gmt7 = timezone(timedelta(hours=7))
+    now_gmt7 = datetime.now(gmt7)
+    return now_gmt7.strftime("%Y-%m-%d %H:%M:%S %Z%z")
 
 def main():
     print("Monitoring clipboard for Telegram links...")
@@ -40,7 +47,8 @@ def main():
             if current_clipboard != last_copied and "https://t.me/" in current_clipboard:
                 # Make sure it's a valid URL (basic check)
                 if current_clipboard.startswith("https://"):
-                    print(f"Found Telegram link: {current_clipboard}")
+                    timestamp = get_timestamp_gmt7()
+                    print(f"[{timestamp}] Found Telegram link: {current_clipboard}")
                     
                     # Ensure file ends with newline before appending
                     ensure_newline_at_end(file_path)
@@ -49,7 +57,7 @@ def main():
                     with open(file_path, 'a') as file:
                         file.write(current_clipboard + "\n")
                     
-                    print("Link added to url-forward.txt")
+                    print(f"[{timestamp}] Link added to url-forward.txt")
             
             # Update last copied text regardless of whether it was added to file
             last_copied = current_clipboard
