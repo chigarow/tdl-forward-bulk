@@ -18,7 +18,8 @@ def process_url(url):
     clean_url = url.replace("?single", "")
     logging.info(f"Processing URL: {clean_url}")
     error_occurred = False
-
+    deleted_message = False
+    
     process = subprocess.Popen(
         ["tdl", "forward", "--from", clean_url],
         stdout=subprocess.PIPE,  
@@ -31,11 +32,20 @@ def process_url(url):
         logging.info(line.strip())
         if "Error" in line:
             error_occurred = True
+        if "may be deleted" in line:
+            deleted_message = True
 
     # Wait for the process to finish
     process.wait()
 
-    if process.returncode == 0 and not error_occurred:
+    if deleted_message:
+        logging.warning(f"Message has been deleted: {clean_url}")
+        # Add the URL to deleted-messages-url.txt with a timestamp
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with open("deleted-messages-url.txt", "a") as deleted_file:
+            deleted_file.write(f"{url} - {timestamp}\n")
+        return True  # Return True to remove from the queue
+    elif process.returncode == 0 and not error_occurred:
         logging.info(f"Successfully forwarded: {clean_url}")
         # Add the URL to done-url.txt with a timestamp
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -73,4 +83,4 @@ def process_urls():
 
 if __name__ == "__main__":
     while process_urls():
-        time.sleep(1)  # Check for new URLs every 1 second
+        time.sleep(0.01)  # Check for new URLs every 0.01 second
