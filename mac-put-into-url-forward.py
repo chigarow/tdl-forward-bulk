@@ -24,13 +24,27 @@ def get_timestamp_gmt7():
     now_gmt7 = datetime.now(gmt7)
     return now_gmt7.strftime("%Y-%m-%d %H:%M:%S %Z%z")
 
+def load_done_links(done_file_path):
+    """Load all links from done-url.txt, ignoring timestamps"""
+    done_links = set()
+    if os.path.exists(done_file_path):
+        with open(done_file_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                # Only take the link part before ' - ' if present
+                link = line.split(' - ')[0]
+                done_links.add(link)
+    return done_links
+
 def main():
     print("Monitoring clipboard for Telegram links...")
     print("Press Ctrl+C to stop")
     
     # Path to the url-forward.txt file
     file_path = os.path.join(os.path.dirname(__file__), "url-forward.txt")
-    
+    done_file_path = os.path.join(os.path.dirname(__file__), "done-url.txt")
     # Ensure file ends with newline
     ensure_newline_at_end(file_path)
     
@@ -47,17 +61,23 @@ def main():
             if current_clipboard != last_copied and "https://t.me/" in current_clipboard:
                 # Make sure it's a valid URL (basic check)
                 if current_clipboard.startswith("https://"):
-                    timestamp = get_timestamp_gmt7()
-                    print(f"[{timestamp}] Found Telegram link: {current_clipboard}")
-                    
-                    # Ensure file ends with newline before appending
-                    ensure_newline_at_end(file_path)
-                    
-                    # Append to file
-                    with open(file_path, 'a') as file:
-                        file.write(current_clipboard + "\n")
-                    
-                    print(f"[{timestamp}] Link added to url-forward.txt")
+                    # Load done links for each check (or cache if you want)
+                    done_links = load_done_links(done_file_path)
+                    link_only = current_clipboard.split(' - ')[0]
+                    if link_only in done_links:
+                        print(f"[{get_timestamp_gmt7()}] Link already in done-url.txt, skipping: {link_only}")
+                    else:
+                        timestamp = get_timestamp_gmt7()
+                        print(f"[{timestamp}] Found Telegram link: {current_clipboard}")
+                        
+                        # Ensure file ends with newline before appending
+                        ensure_newline_at_end(file_path)
+                        
+                        # Append to file
+                        with open(file_path, 'a') as file:
+                            file.write(current_clipboard + "\n")
+                        
+                        print(f"[{timestamp}] Link added to url-forward.txt")
             
             # Update last copied text regardless of whether it was added to file
             last_copied = current_clipboard
