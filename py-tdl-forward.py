@@ -19,6 +19,10 @@ def process_url(url):
     logging.info(f"Processing URL: {clean_url}")
     error_occurred = False
     deleted_message = False
+    invalid_message = False
+    chat_id_invalid = False
+    username_invalid = False
+    error_reason = ""
     
     process = subprocess.Popen(
         ["tdl", "forward", "--from", clean_url],
@@ -34,16 +38,41 @@ def process_url(url):
             error_occurred = True
         if "may be deleted" in line:
             deleted_message = True
+            error_reason = "MESSAGE_DELETED"
+        if "invalid message" in line:
+            invalid_message = True
+            error_reason = "INVALID_MESSAGE"
+        if "CHAT_ID_INVALID" in line:
+            chat_id_invalid = True
+            error_reason = "CHAT_ID_INVALID"
+        if "USERNAME_INVALID" in line:
+            username_invalid = True
+            error_reason = "USERNAME_INVALID"
 
     # Wait for the process to finish
     process.wait()
 
-    if deleted_message:
+    if invalid_message or chat_id_invalid or username_invalid:
+        log_message = "Invalid URL detected"
+        if invalid_message:
+            log_message = "Invalid message detected"
+        elif chat_id_invalid:
+            log_message = "Chat ID invalid"
+        elif username_invalid:
+            log_message = "Username invalid"
+            
+        logging.warning(f"{log_message}: {clean_url}")
+        # Add the URL to invalid-url.txt with a timestamp and reason
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with open("invalid-url.txt", "a") as invalid_file:
+            invalid_file.write(f"{url} - {timestamp} - {error_reason}\n")
+        return True  # Return True to remove from the queue
+    elif deleted_message:
         logging.warning(f"Message has been deleted: {clean_url}")
         # Add the URL to deleted-messages-url.txt with a timestamp
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         with open("deleted-messages-url.txt", "a") as deleted_file:
-            deleted_file.write(f"{url} - {timestamp}\n")
+            deleted_file.write(f"{url} - {timestamp} - {error_reason}\n")
         return True  # Return True to remove from the queue
     elif process.returncode == 0 and not error_occurred:
         logging.info(f"Successfully forwarded: {clean_url}")
