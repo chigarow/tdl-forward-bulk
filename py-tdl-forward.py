@@ -13,9 +13,42 @@ logging.basicConfig(
     ]
 )
 
-def process_url(url):
+def normalize_url(url):
+    """Normalize URL by removing ?single parameter and any timestamp."""
+    # Split by dash and take the first part (the URL itself)
+    base_url = url.split(" - ")[0].strip()
+    # Remove ?single parameter if present
+    return base_url.replace("?single", "")
+
+def get_processed_urls():
+    """Read done-url.txt and return a set of normalized URLs that have been processed."""
+    processed_urls = set()
+    try:
+        with open("done-url.txt", "r") as f:
+            for line in f:
+                if line.strip():
+                    normalized_url = normalize_url(line)
+                    processed_urls.add(normalized_url)
+    except FileNotFoundError:
+        logging.info("done-url.txt not found. Creating a new one.")
+        with open("done-url.txt", "w") as f:
+            pass
+    return processed_urls
+
+def process_url(url, processed_urls):
     """Processes a single URL using tdl."""
     clean_url = url.replace("?single", "")
+    
+    # Check if URL is already processed
+    normalized_url = normalize_url(url)
+    if normalized_url in processed_urls:
+        logging.info(f"Duplicate URL detected: {clean_url}")
+        # Add the URL to duplicate-url.txt with a timestamp
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with open("duplicate-url.txt", "a") as dup_file:
+            dup_file.write(f"{url} - {timestamp}\n")
+        return True  # Return True to remove from the queue
+    
     logging.info(f"Processing URL: {clean_url}")
     error_occurred = False
     deleted_message = False
@@ -80,6 +113,8 @@ def process_url(url):
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         with open("done-url.txt", "a") as done_file:
             done_file.write(f"{url} - {timestamp}\n")
+        # Add to the processed_urls set so we don't need to re-read the file
+        processed_urls.add(normalized_url)
         return True
     else:
         # Log the specific error from the output
@@ -87,7 +122,7 @@ def process_url(url):
         time.sleep(5)  # Retry after 5 seconds
         return False
 
-def process_urls():
+def process_urls(processed_urls):
     """Continuously processes URLs from url-forward.txt one by one."""
     try:
         with open("url-forward.txt", "r") as f:
@@ -98,7 +133,7 @@ def process_urls():
             logging.info("url-forward.txt is empty. Stopping script.")
             return False
 
-        if process_url(first_line):
+        if process_url(first_line, processed_urls):
             with open("url-forward.txt", "r") as f:
                 lines = f.readlines()
             with open("url-forward.txt", "w") as f:
@@ -111,5 +146,9 @@ def process_urls():
 
 
 if __name__ == "__main__":
-    while process_urls():
+    # Load all processed URLs once at the start
+    processed_urls = get_processed_urls()
+    logging.info(f"Loaded {len(processed_urls)} previously processed URLs")
+    
+    while process_urls(processed_urls):
         time.sleep(0.01)  # Check for new URLs every 0.01 second

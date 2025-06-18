@@ -3,6 +3,12 @@ import time
 import os
 from datetime import datetime, timezone, timedelta
 
+def normalize_url(url):
+    """Remove '?single' parameter from telegram URLs"""
+    if "?single" in url:
+        return url.replace("?single", "")
+    return url
+
 def ensure_newline_at_end(file_path):
     """Ensure the file ends with a newline character"""
     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
@@ -25,7 +31,7 @@ def get_timestamp_gmt7():
     return now_gmt7.strftime("%Y-%m-%d %H:%M:%S %Z%z")
 
 def load_done_links(done_file_path):
-    """Load all links from done-url.txt, ignoring timestamps"""
+    """Load all links from done-url.txt, ignoring timestamps and normalizing URLs"""
     done_links = set()
     if os.path.exists(done_file_path):
         with open(done_file_path, 'r') as f:
@@ -35,7 +41,9 @@ def load_done_links(done_file_path):
                     continue
                 # Only take the link part before ' - ' if present
                 link = line.split(' - ')[0]
-                done_links.add(link)
+                # Normalize the URL by removing ?single parameter
+                normalized_link = normalize_url(link)
+                done_links.add(normalized_link)
     return done_links
 
 def main():
@@ -61,10 +69,12 @@ def main():
             if current_clipboard != last_copied and "https://t.me/" in current_clipboard:
                 # Make sure it's a valid URL (basic check)
                 if current_clipboard.startswith("https://"):
-                    # Load done links for each check (or cache if you want)
+                    # Load done links for each check
                     done_links = load_done_links(done_file_path)
                     link_only = current_clipboard.split(' - ')[0]
-                    if link_only in done_links:
+                    # Normalize the URL before checking if it exists in done_links
+                    normalized_link = normalize_url(link_only)
+                    if normalized_link in done_links:
                         print(f"[{get_timestamp_gmt7()}] Link already in done-url.txt, skipping: {link_only}")
                     else:
                         timestamp = get_timestamp_gmt7()
