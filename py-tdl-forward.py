@@ -2,6 +2,7 @@ import subprocess
 import time
 import logging
 from datetime import datetime
+import redis
 
 # Set up logging to console and file
 logging.basicConfig(
@@ -13,6 +14,22 @@ logging.basicConfig(
     ]
 )
 
+# Redis connection and configuration
+REDIS_HOST = '127.0.0.1'
+REDIS_PORT = 6379
+REDIS_DB = 0
+PROCESSED_URLS_KEY = "tdl:processed_urls"
+
+# Initialize Redis client
+try:
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+    redis_client.ping()  # Test connection
+    redis_available = True
+    logging.info("Redis connection established")
+except (redis.ConnectionError, redis.exceptions.ConnectionError):
+    redis_available = False
+    logging.warning("Redis connection failed - falling back to file-based tracking")
+
 def normalize_url(url):
     """Normalize URL by removing ?single parameter and any timestamp."""
     # Split by dash and take the first part (the URL itself)
@@ -20,8 +37,29 @@ def normalize_url(url):
     # Remove ?single parameter if present
     return base_url.replace("?single", "")
 
+def sync_redis_from_file():
+    """Synchronize Redis set with URLs from done-url.txt"""
+    if not redis_available:
+        return
+    
+    try:
+        with open("done-url.txt", "r") as f:
+            for line in f:
+                if line.strip():
+                    normalized_url = normalize_url(line)
+                    redis_client.sadd(PROCESSED_URLS_KEY, normalized_url)
+        
+        url_count = redis_client.scard(PROCESSED_URLS_KEY)
+        logging.info(f"Synchronized {url_count} URLs to Redis")
+    except FileNotFoundError:
+        logging.info("done-url.txt not found. Creating a new one.")
+        with open("done-url.txt", "w") as f:
+            pass
+
 def get_processed_urls():
     """Read done-url.txt and return a set of normalized URLs that have been processed."""
+    # If Redis is available, we'll still load file data as backup,
+    # but we'll primarily use Redis for lookups
     processed_urls = set()
     try:
         with open("done-url.txt", "r") as f:
@@ -35,13 +73,29 @@ def get_processed_urls():
             pass
     return processed_urls
 
+def is_url_processed(url):
+    """Check if URL has been processed using Redis if available, otherwise use in-memory set."""
+    normalized_url = normalize_url(url)
+    if redis_available:
+        return redis_client.sismember(PROCESSED_URLS_KEY, normalized_url)
+    else:
+        return normalized_url in processed_urls
+
+def mark_url_processed(url, processed_urls):
+    """Mark URL as processed in Redis and update in-memory set if needed."""
+    normalized_url = normalize_url(url)
+    if redis_available:
+        redis_client.sadd(PROCESSED_URLS_KEY, normalized_url)
+    
+    # Always update in-memory set as fallback
+    processed_urls.add(normalized_url)
+
 def process_url(url, processed_urls):
     """Processes a single URL using tdl."""
     clean_url = url.replace("?single", "")
     
     # Check if URL is already processed
-    normalized_url = normalize_url(url)
-    if normalized_url in processed_urls:
+    if is_url_processed(url):
         logging.info(f"Duplicate URL detected: {clean_url}")
         # Add the URL to duplicate-url.txt with a timestamp
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -113,8 +167,9 @@ def process_url(url, processed_urls):
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         with open("done-url.txt", "a") as done_file:
             done_file.write(f"{url} - {timestamp}\n")
-        # Add to the processed_urls set so we don't need to re-read the file
-        processed_urls.add(normalized_url)
+        
+        # Mark URL as processed in Redis and update in-memory set
+        mark_url_processed(url, processed_urls)
         return True
     else:
         # Log the specific error from the output
@@ -149,6 +204,10 @@ if __name__ == "__main__":
     # Load all processed URLs once at the start
     processed_urls = get_processed_urls()
     logging.info(f"Loaded {len(processed_urls)} previously processed URLs")
+    
+    # If Redis is available, sync file data to Redis
+    if redis_available:
+        sync_redis_from_file()
     
     while process_urls(processed_urls):
         time.sleep(0.01)  # Check for new URLs every 0.01 second
