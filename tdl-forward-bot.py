@@ -1,8 +1,6 @@
-
-
 import logging
 import subprocess
-import redis
+import threading
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 from datetime import datetime
@@ -29,15 +27,33 @@ logging.basicConfig(
 	format='%(asctime)s - %(levelname)s: %(message)s',
 )
 
-# --- REDIS ---
-try:
-	redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
-	redis_client.ping()
-	redis_available = True
-	logging.info("Redis connection established")
-except Exception as e:
-	redis_available = False
-	logging.warning(f"Redis connection failed: {e}")
+
+
+# --- FILE-BASED PERSISTENCE ---
+DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
+os.makedirs(DATA_DIR, exist_ok=True)
+QUEUE_FILE = os.path.join(DATA_DIR, 'queue.txt')
+PROCESSING_FILE = os.path.join(DATA_DIR, 'processing.txt')
+FINISHED_FILE = os.path.join(DATA_DIR, 'finished.txt')
+file_lock = threading.Lock()
+
+def read_lines(filename):
+	if not os.path.exists(filename):
+		return []
+	with open(filename, 'r') as f:
+		return [line.strip() for line in f if line.strip()]
+
+def write_lines(filename, lines):
+	with open(filename, 'w') as f:
+		for line in lines:
+			f.write(line + '\n')
+
+def append_line(filename, line):
+	with open(filename, 'a') as f:
+		f.write(line + '\n')
+
+def clear_file(filename):
+	open(filename, 'w').close()
 
 def normalize_url(url):
 	return url.split(" - ")[0].strip().replace("?single", "")
@@ -45,32 +61,50 @@ def normalize_url(url):
 
 def is_url_processed_anywhere(url):
 	normalized_url = normalize_url(url)
-	# Check Redis
-	if redis_available and redis_client.sismember(PROCESSED_URLS_KEY, normalized_url):
-		logging.info(f"Duplicate check: {normalized_url} found in Redis (already processed)")
-		return 'redis'
-	# Check current_processing
-	if current_processing and normalize_url(current_processing[0]) == normalized_url:
-		logging.info(f"Duplicate check: {normalized_url} is currently being processed")
+	with file_lock:
+		finished = set(read_lines(FINISHED_FILE))
+		queue = set(read_lines(QUEUE_FILE))
+		processing = set(read_lines(PROCESSING_FILE))
+	if normalized_url in finished:
+		logging.info(f"Duplicate check: {normalized_url} found in finished.txt (already processed)")
+		return 'finished'
+	if normalized_url in processing:
+		logging.info(f"Duplicate check: {normalized_url} is currently being processed (processing.txt)")
 		return 'processing'
-	# Check queue_links
-	for queued_url, *_ in queue_links:
-		if normalize_url(queued_url) == normalized_url:
-			logging.info(f"Duplicate check: {normalized_url} is in the queue")
-			return 'queue'
+	if normalized_url in queue:
+		logging.info(f"Duplicate check: {normalized_url} is in the queue (queue.txt)")
+		return 'queue'
 	logging.info(f"Duplicate check: {normalized_url} is new (not processed, not in queue)")
 	return None
 
+
 def mark_url_processed(url):
 	normalized_url = normalize_url(url)
-	if redis_available:
-		redis_client.sadd(PROCESSED_URLS_KEY, normalized_url)
+	with file_lock:
+		append_line(FINISHED_FILE, normalized_url)
+		clear_file(PROCESSING_FILE)
+
 
 
 # --- QUEUE AND WORKER ---
 queue = asyncio.Queue()
 queue_links = []  # List of (url, user, chat_id, message_id) for /q, /remove, /clear
 current_processing = None  # (url, user, chat_id, message_id)
+
+# On startup, load queue and processing from files
+def load_persistent_state():
+	with file_lock:
+		processing_lines = read_lines(PROCESSING_FILE)
+		queue_lines = read_lines(QUEUE_FILE)
+	# If processing.txt has a link, process it first
+	if processing_lines:
+		url = processing_lines[0]
+		queue_links.append((url, '', None, None))
+		queue.put_nowait((url, '', None, None))
+	# Then load the rest of the queue
+	for url in queue_lines:
+		queue_links.append((url, '', None, None))
+		queue.put_nowait((url, '', None, None))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	if not update.message or not update.message.text:
@@ -92,19 +126,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 			await update.message.reply_text("This link is a duplicate.")
 		return
 
-	# Put job in queue and queue_links
+	# Put job in queue and queue_links, and persist to file
 	user_id = update.effective_user.id if update.effective_user else None
 	chat_id = update.effective_chat.id if update.effective_chat else None
 	message_id = update.message.message_id if update.message else None
 	job = (url, user, chat_id, message_id)
 	await queue.put(job)
 	queue_links.append(job)
+	with file_lock:
+		append_line(QUEUE_FILE, normalize_url(url))
 	# Feedback logic
-	# If nothing is being processed and this is the only job, it's being processed now
 	if current_processing is None and queue.qsize() == 1:
 		await update.message.reply_text("Your link is being processed...")
 	else:
-		# Position in queue is the number of jobs ahead of this one (including current_processing)
 		position = queue.qsize()
 		await update.message.reply_text(f"Your link is in the queue. Position: {position}")
 
@@ -119,6 +153,16 @@ async def queue_worker():
 			if u == url:
 				del queue_links[i]
 				break
+		# Only write to processing.txt if not already there
+		with file_lock:
+			processing_lines = read_lines(PROCESSING_FILE)
+			if not processing_lines or processing_lines[0] != normalize_url(url):
+				write_lines(PROCESSING_FILE, [normalize_url(url)])
+		# Remove from queue.txt if present
+		normalized_url = normalize_url(url)
+		queue_lines = read_lines(QUEUE_FILE)
+		queue_lines = [l for l in queue_lines if l != normalized_url]
+		write_lines(QUEUE_FILE, queue_lines)
 		try:
 			await process_link(url, user, chat_id, message_id)
 		except Exception as e:
@@ -180,21 +224,25 @@ async def send_message(chat_id, text, reply_to_message_id=None):
 	bot = Bot(BOT_TOKEN)
 	await bot.send_message(chat_id=chat_id, text=text, reply_to_message_id=reply_to_message_id)
 
+
 # --- COMMANDS ---
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-	if current_processing:
-		url, user, chat_id, message_id = current_processing
-		await update.message.reply_text(f"Currently processing:\n{url}\nFrom: {user}")
+	with file_lock:
+		processing = read_lines(PROCESSING_FILE)
+	if processing:
+		await update.message.reply_text(f"Currently processing:\n{processing[0]}")
 	else:
 		await update.message.reply_text("No link under process.")
 
 async def q_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-	if not queue_links:
+	with file_lock:
+		queue_list = read_lines(QUEUE_FILE)
+	if not queue_list:
 		await update.message.reply_text("Queue is empty.")
 		return
 	msg = "Links in queue:\n"
-	for i, (url, user, chat_id, message_id) in enumerate(queue_links, 1):
-		msg += f"{i}. {url} (from {user})\n"
+	for i, url in enumerate(queue_list, 1):
+		msg += f"{i}. {url}\n"
 	await update.message.reply_text(msg.strip())
 
 async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -202,61 +250,53 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		await update.message.reply_text("Usage: /remove THE_URL")
 		return
 	url_to_remove = " ".join(context.args).strip()
-	for i, (url, user, chat_id, message_id) in enumerate(queue_links):
-		if url == url_to_remove:
-			del queue_links[i]
+	with file_lock:
+		queue_list = read_lines(QUEUE_FILE)
+		if url_to_remove in queue_list:
+			queue_list = [u for u in queue_list if u != url_to_remove]
+			write_lines(QUEUE_FILE, queue_list)
 			await update.message.reply_text(f"Removed: {url_to_remove}")
-			return
-	await update.message.reply_text("URL not found in queue.")
+		else:
+			await update.message.reply_text("URL not found in queue.")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-	queue_links.clear()
-	# Drain the asyncio.Queue
-	while not queue.empty():
-		try:
-			queue.get_nowait()
-			queue.task_done()
-		except Exception:
-			break
+	with file_lock:
+		clear_file(QUEUE_FILE)
 	await update.message.reply_text("Queue cleared.")
 
-async def empty_redis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-	if redis_available:
-		count = redis_client.scard(PROCESSED_URLS_KEY)
-		redis_client.delete(PROCESSED_URLS_KEY)
-		await update.message.reply_text(f"Redis cleared. Removed {count} processed URLs.")
-	else:
-		await update.message.reply_text("Redis is not available.")
 
-async def delete_link_redis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def empty_finished_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	with file_lock:
+		count = len(read_lines(FINISHED_FILE))
+		clear_file(FINISHED_FILE)
+	await update.message.reply_text(f"Finished list cleared. Removed {count} processed URLs.")
+
+async def delete_link_finished_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	if not context.args:
-		await update.message.reply_text("Usage: /delete_link_redis THE_URL")
+		await update.message.reply_text("Usage: /delete_link_finished THE_URL")
 		return
-	
-	if not redis_available:
-		await update.message.reply_text("Redis is not available.")
-		return
-	
 	url_to_delete = " ".join(context.args).strip()
 	normalized_url = normalize_url(url_to_delete)
-	
-	# Check if the URL exists in Redis
-	if redis_client.sismember(PROCESSED_URLS_KEY, normalized_url):
-		redis_client.srem(PROCESSED_URLS_KEY, normalized_url)
-		await update.message.reply_text(f"Removed from Redis: {normalized_url}")
-	else:
-		await update.message.reply_text(f"URL not found in Redis: {normalized_url}")
+	with file_lock:
+		finished_list = read_lines(FINISHED_FILE)
+		if normalized_url in finished_list:
+			finished_list = [u for u in finished_list if u != normalized_url]
+			write_lines(FINISHED_FILE, finished_list)
+			await update.message.reply_text(f"Removed from finished: {normalized_url}")
+		else:
+			await update.message.reply_text(f"URL not found in finished: {normalized_url}")
 
 
 def main():
+	load_persistent_state()
 	app = ApplicationBuilder().token(BOT_TOKEN).build()
 	app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 	app.add_handler(CommandHandler("status", status_command))
 	app.add_handler(CommandHandler("q", q_command))
 	app.add_handler(CommandHandler("remove", remove_command))
 	app.add_handler(CommandHandler("clear", clear_command))
-	app.add_handler(CommandHandler("empty_redis", empty_redis_command))
-	app.add_handler(CommandHandler("delete_link_redis", delete_link_redis_command))
+	app.add_handler(CommandHandler("empty_finished", empty_finished_command))
+	app.add_handler(CommandHandler("delete_link_finished", delete_link_finished_command))
 	logging.info("Bot started. Waiting for messages...")
 
 	# Start the queue worker in the event loop and set bot commands
@@ -266,8 +306,8 @@ def main():
 			("q", "Show all links in the queue"),
 			("remove", "Remove a link from the queue by URL"),
 			("clear", "Clear all links from the queue"),
-			("empty_redis", "Clear all processed URLs from Redis"),
-			("delete_link_redis", "Remove a specific URL from Redis"),
+			("empty_finished", "Clear all processed URLs from finished.txt"),
+			("delete_link_finished", "Remove a specific URL from finished.txt"),
 		])
 		app.create_task(queue_worker())
 
