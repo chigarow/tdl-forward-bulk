@@ -1,3 +1,5 @@
+# Ignore secrets file containing bot token
+secrets.properties
 # Created by https://www.toptal.com/developers/gitignore/api/python,visualstudiocode,go
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,visualstudiocode,go
 
