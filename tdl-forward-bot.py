@@ -9,6 +9,7 @@ import configparser
 import asyncio
 
 
+
 # --- CONFIG ---
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'secrets.properties')
 config = configparser.ConfigParser()
@@ -16,10 +17,43 @@ config.read(CONFIG_PATH)
 BOT_TOKEN = config.get('DEFAULT', 'BOT_TOKEN', fallback=None)
 if not BOT_TOKEN:
 	raise RuntimeError('BOT_TOKEN not found in secrets.properties!')
-REDIS_HOST = '127.0.0.1'
-REDIS_PORT = 6379
-REDIS_DB = 0
-PROCESSED_URLS_KEY = "tdl:processed_urls"
+
+
+# --- FILE-BASED PERSISTENCE ---
+DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
+os.makedirs(DATA_DIR, exist_ok=True)
+QUEUE_FILE = os.path.join(DATA_DIR, 'queue.txt')
+PROCESSING_FILE = os.path.join(DATA_DIR, 'processing.txt')
+FINISHED_FILE = os.path.join(DATA_DIR, 'finished.txt')
+USERS_FILE = os.path.join(DATA_DIR, 'users.txt')
+PASSWORD = config.get('DEFAULT', 'PASSWORD', fallback=None)
+file_lock = threading.Lock()
+
+# --- USER AUTHENTICATION ---
+def read_users():
+	users = {}
+	if not os.path.exists(USERS_FILE):
+		return users
+	with open(USERS_FILE, 'r') as f:
+		for line in f:
+			if '=' in line:
+				uid, status = line.strip().split('=', 1)
+				users[uid] = status
+	return users
+
+def write_users(users):
+	with open(USERS_FILE, 'w') as f:
+		for uid, status in users.items():
+			f.write(f"{uid}={status}\n")
+
+def set_user_status(user_id, status):
+	users = read_users()
+	users[str(user_id)] = status
+	write_users(users)
+
+def get_user_status(user_id):
+	users = read_users()
+	return users.get(str(user_id), None)
 
 # --- LOGGING ---
 logging.basicConfig(
@@ -109,10 +143,30 @@ def load_persistent_state():
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	if not update.message or not update.message.text:
 		return
-	url = update.message.text.strip()
+	user_id = update.effective_user.id if update.effective_user else None
 	user = update.effective_user.first_name if update.effective_user else "user"
-	logging.info(f"Received from {user}: {url}")
+	chat_id = update.effective_chat.id if update.effective_chat else None
+	message_id = update.message.message_id if update.message else None
+	text = update.message.text.strip()
+	logging.info(f"Received from {user} ({user_id}): {text}")
 
+	# --- AUTHENTICATION CHECK ---
+	status = get_user_status(user_id)
+	if status == 'authenticated':
+		pass  # continue to normal processing
+	elif status == 'not_authenticated' or status is None:
+		# If user is not authenticated, check if they are trying to enter password
+		if PASSWORD and text == PASSWORD:
+			set_user_status(user_id, 'authenticated')
+			await update.message.reply_text("✅ You are now authenticated! You can use the bot.")
+			return
+		else:
+			set_user_status(user_id, 'not_authenticated')
+			await update.message.reply_text("🔒 Please enter the password to use this bot.")
+			return
+
+	# --- NORMAL BOT LOGIC (only for authenticated users) ---
+	url = text
 	# Check for duplicate based on finished.txt, queue.txt, and processing.txt
 	duplicate_status = is_url_processed_anywhere(url)
 	if duplicate_status:
@@ -127,9 +181,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		return
 
 	# Put job in queue and queue_links, and persist to file
-	user_id = update.effective_user.id if update.effective_user else None
-	chat_id = update.effective_chat.id if update.effective_chat else None
-	message_id = update.message.message_id if update.message else None
 	job = (url, user, chat_id, message_id)
 	await queue.put(job)
 	queue_links.append(job)
@@ -227,6 +278,11 @@ async def send_message(chat_id, text, reply_to_message_id=None):
 
 # --- COMMANDS ---
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	user_id = update.effective_user.id if update.effective_user else None
+	status = get_user_status(user_id)
+	if status != 'authenticated':
+		await update.message.reply_text("🔒 Please enter the password to use this bot.")
+		return
 	with file_lock:
 		processing = read_lines(PROCESSING_FILE)
 	if processing:
@@ -235,6 +291,11 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		await update.message.reply_text("No link under process.")
 
 async def q_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	user_id = update.effective_user.id if update.effective_user else None
+	status = get_user_status(user_id)
+	if status != 'authenticated':
+		await update.message.reply_text("🔒 Please enter the password to use this bot.")
+		return
 	with file_lock:
 		queue_list = read_lines(QUEUE_FILE)
 	if not queue_list:
@@ -246,6 +307,11 @@ async def q_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	await update.message.reply_text(msg.strip())
 
 async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	user_id = update.effective_user.id if update.effective_user else None
+	status = get_user_status(user_id)
+	if status != 'authenticated':
+		await update.message.reply_text("🔒 Please enter the password to use this bot.")
+		return
 	if not context.args:
 		await update.message.reply_text("Usage: /remove THE_URL")
 		return
@@ -260,18 +326,33 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 			await update.message.reply_text("URL not found in queue.")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	user_id = update.effective_user.id if update.effective_user else None
+	status = get_user_status(user_id)
+	if status != 'authenticated':
+		await update.message.reply_text("🔒 Please enter the password to use this bot.")
+		return
 	with file_lock:
 		clear_file(QUEUE_FILE)
 	await update.message.reply_text("Queue cleared.")
 
 
 async def empty_finished_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	user_id = update.effective_user.id if update.effective_user else None
+	status = get_user_status(user_id)
+	if status != 'authenticated':
+		await update.message.reply_text("🔒 Please enter the password to use this bot.")
+		return
 	with file_lock:
 		count = len(read_lines(FINISHED_FILE))
 		clear_file(FINISHED_FILE)
 	await update.message.reply_text(f"Finished list cleared. Removed {count} processed URLs.")
 
 async def delete_link_finished_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	user_id = update.effective_user.id if update.effective_user else None
+	status = get_user_status(user_id)
+	if status != 'authenticated':
+		await update.message.reply_text("🔒 Please enter the password to use this bot.")
+		return
 	if not context.args:
 		await update.message.reply_text("Usage: /delete_link_finished THE_URL")
 		return
