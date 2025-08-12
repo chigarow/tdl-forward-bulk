@@ -113,10 +113,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	user = update.effective_user.first_name if update.effective_user else "user"
 	logging.info(f"Received from {user}: {url}")
 
-	# Check for duplicate in Redis, queue, or currently processing
+	# Check for duplicate based on finished.txt, queue.txt, and processing.txt
 	duplicate_status = is_url_processed_anywhere(url)
 	if duplicate_status:
-		if duplicate_status == 'redis':
+		if duplicate_status == 'finished':
 			await update.message.reply_text("This link has already been processed.")
 		elif duplicate_status == 'processing':
 			await update.message.reply_text("This link is currently being processed.")
