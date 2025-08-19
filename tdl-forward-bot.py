@@ -25,9 +25,21 @@ os.makedirs(DATA_DIR, exist_ok=True)
 QUEUE_FILE = os.path.join(DATA_DIR, 'queue.txt')
 PROCESSING_FILE = os.path.join(DATA_DIR, 'processing.txt')
 FINISHED_FILE = os.path.join(DATA_DIR, 'finished.txt')
+FAILED_FILE = os.path.join(DATA_DIR, 'failed.txt')
 USERS_FILE = os.path.join(DATA_DIR, 'users.txt')
 PASSWORD = config.get('DEFAULT', 'PASSWORD', fallback=None)
 file_lock = threading.Lock()
+def append_failed(url, reason=None):
+	# Add a failed forward to failed.txt with GMT+7 timestamp
+	from datetime import datetime, timezone, timedelta
+	tz = timezone(timedelta(hours=7))
+	now = datetime.now(tz)
+	timestamp = now.strftime('%Y-%m-%d %H:%M:%S GMT+7')
+	line = f"{timestamp} | {normalize_url(url)}"
+	if reason:
+		line += f" | {reason}"
+	with file_lock:
+		append_line(FAILED_FILE, line)
 
 # --- USER AUTHENTICATION ---
 def read_users():
@@ -267,7 +279,23 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int):
 			logging.error(f"Failed to send success message: {e}")
 			# Don't mark as processed if we couldn't send the success message
 	else:
+		append_failed(url)
 		await send_message(chat_id, f"❌ Failed to forward. See log file for details.", reply_to_message_id=message_id)
+async def failed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	user_id = update.effective_user.id if update.effective_user else None
+	status = get_user_status(user_id)
+	if status != 'authenticated':
+		await update.message.reply_text("🔒 Please enter the password to use this bot.")
+		return
+	with file_lock:
+		failed_list = read_lines(FAILED_FILE)
+	if not failed_list:
+		await update.message.reply_text("No failed forwards.")
+		return
+	msg = "Failed forwards (latest on bottom):\n"
+	for line in failed_list:
+		msg += f"{line}\n"
+	await update.message.reply_text(msg.strip())
 
 # Helper to send message from outside handler
 async def send_message(chat_id, text, reply_to_message_id=None):
@@ -378,6 +406,7 @@ def main():
 	app.add_handler(CommandHandler("clear", clear_command))
 	app.add_handler(CommandHandler("empty_finished", empty_finished_command))
 	app.add_handler(CommandHandler("delete_link_finished", delete_link_finished_command))
+	app.add_handler(CommandHandler("failed", failed_command))
 	logging.info("Bot started. Waiting for messages...")
 
 	# Start the queue worker in the event loop and set bot commands
@@ -389,6 +418,7 @@ def main():
 			("clear", "Clear all links from the queue"),
 			("empty_finished", "Clear all processed URLs from finished.txt"),
 			("delete_link_finished", "Remove a specific URL from finished.txt"),
+			("failed", "Show all failed forwards with timestamp (GMT+7)"),
 		])
 		app.create_task(queue_worker())
 
