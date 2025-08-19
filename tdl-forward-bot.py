@@ -137,6 +137,7 @@ queue = asyncio.Queue()
 queue_links = []  # List of (url, user, chat_id, message_id) for /q, /remove, /clear
 current_processing = None  # (url, user, chat_id, message_id)
 current_progress = None  # Store current progress info (percentage, eta, speed)
+bulk_batches = {}  # Track bulk submissions: {batch_id: {chat_id, message_id, total, completed, failed}}
 
 # On startup, load queue and processing from files
 def load_persistent_state():
@@ -146,12 +147,12 @@ def load_persistent_state():
 	# If processing.txt has a link, process it first
 	if processing_lines:
 		url = processing_lines[0]
-		queue_links.append((url, '', None, None))
-		queue.put_nowait((url, '', None, None))
+		queue_links.append((url, '', None, None, None))  # Add None for batch_id
+		queue.put_nowait((url, '', None, None, None))
 	# Then load the rest of the queue
 	for url in queue_lines:
-		queue_links.append((url, '', None, None))
-		queue.put_nowait((url, '', None, None))
+		queue_links.append((url, '', None, None, None))  # Add None for batch_id
+		queue.put_nowait((url, '', None, None, None))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	if not update.message or not update.message.text:
@@ -199,6 +200,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	duplicate_count = 0
 	duplicate_details = []
 	
+	# Generate batch ID for bulk submissions (multiple URLs)
+	batch_id = None
+	if len(valid_urls) > 1:
+		import uuid
+		batch_id = str(uuid.uuid4())
+		bulk_batches[batch_id] = {
+			'chat_id': chat_id,
+			'message_id': message_id,
+			'total': len(valid_urls),
+			'completed': 0,
+			'failed': 0,
+			'user': user
+		}
+	
 	for url in valid_urls:
 		# Check for duplicate based on finished.txt, queue.txt, and processing.txt
 		duplicate_status = is_url_processed_anywhere(url)
@@ -208,7 +223,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 			continue
 		
 		# Put job in queue and queue_links, and persist to file
-		job = (url, user, chat_id, message_id)
+		job = (url, user, chat_id, message_id, batch_id)  # Add batch_id to job
 		await queue.put(job)
 		queue_links.append(job)
 		with file_lock:
@@ -249,7 +264,8 @@ async def queue_worker():
 	global current_processing, current_progress
 	while True:
 		job = await queue.get()
-		url, user, chat_id, message_id = job
+		url, user, chat_id, message_id = job[:4]  # Handle both old and new job formats
+		batch_id = job[4] if len(job) > 4 else None
 		current_processing = job
 		current_progress = None  # Reset progress for new job
 		# Remove from queue_links (first occurrence)
@@ -268,14 +284,14 @@ async def queue_worker():
 		queue_lines = [l for l in queue_lines if l != normalized_url]
 		write_lines(QUEUE_FILE, queue_lines)
 		try:
-			await process_link(url, user, chat_id, message_id)
+			await process_link(url, user, chat_id, message_id, batch_id)
 		except Exception as e:
 			logging.error(f"Error processing link: {e}")
 		current_processing = None
 		current_progress = None  # Clear progress when done
 		queue.task_done()
 
-async def process_link(url: str, user: str, chat_id: int, message_id: int):
+async def process_link(url: str, user: str, chat_id: int, message_id: int, batch_id: str = None):
 	import time as _time
 	import re
 	from telegram import Bot
@@ -393,18 +409,69 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int):
 	if process.returncode == 0 and not error_occurred:
 		human_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 		elapsed_formatted = format_elapsed_time(elapsed)
-		try:
-			await send_message(chat_id,
-				f"✅ Forwarded successfully!\nTime: {human_time}\nElapsed: {elapsed_formatted}",
-				reply_to_message_id=message_id)
-			# Only mark as processed after successfully sending the success message
-			mark_url_processed(url)
-		except Exception as e:
-			logging.error(f"Failed to send success message: {e}")
-			# Don't mark as processed if we couldn't send the success message
+		
+		# Handle bulk vs single link notifications
+		if batch_id and batch_id in bulk_batches:
+			# This is part of a bulk submission
+			bulk_batches[batch_id]['completed'] += 1
+			
+			# Check if this batch is complete
+			batch_info = bulk_batches[batch_id]
+			if batch_info['completed'] + batch_info['failed'] >= batch_info['total']:
+				# Send summary notification
+				summary_msg = f"📦 Bulk processing complete!\n"
+				summary_msg += f"✅ Completed: {batch_info['completed']}\n"
+				if batch_info['failed'] > 0:
+					summary_msg += f"❌ Failed: {batch_info['failed']}\n"
+				summary_msg += f"📊 Total: {batch_info['total']} links"
+				
+				try:
+					await send_message(batch_info['chat_id'], summary_msg, reply_to_message_id=batch_info['message_id'])
+				except Exception as e:
+					logging.error(f"Failed to send bulk summary: {e}")
+				
+				# Clean up batch tracking
+				del bulk_batches[batch_id]
+		else:
+			# Single link - send individual notification
+			try:
+				await send_message(chat_id,
+					f"✅ Forwarded successfully!\nTime: {human_time}\nElapsed: {elapsed_formatted}",
+					reply_to_message_id=message_id)
+			except Exception as e:
+				logging.error(f"Failed to send success message: {e}")
+				# Don't mark as processed if we couldn't send the success message
+				return
+		
+		# Only mark as processed after successfully handling notifications
+		mark_url_processed(url)
 	else:
+		# Handle failures
+		if batch_id and batch_id in bulk_batches:
+			bulk_batches[batch_id]['failed'] += 1
+			
+			# Check if this batch is complete
+			batch_info = bulk_batches[batch_id]
+			if batch_info['completed'] + batch_info['failed'] >= batch_info['total']:
+				# Send summary notification
+				summary_msg = f"📦 Bulk processing complete!\n"
+				summary_msg += f"✅ Completed: {batch_info['completed']}\n"
+				if batch_info['failed'] > 0:
+					summary_msg += f"❌ Failed: {batch_info['failed']}\n"
+				summary_msg += f"📊 Total: {batch_info['total']} links"
+				
+				try:
+					await send_message(batch_info['chat_id'], summary_msg, reply_to_message_id=batch_info['message_id'])
+				except Exception as e:
+					logging.error(f"Failed to send bulk summary: {e}")
+				
+				# Clean up batch tracking
+				del bulk_batches[batch_id]
+		else:
+			# Single link failure notification
+			await send_message(chat_id, f"❌ Failed to forward. See log file for details.", reply_to_message_id=message_id)
+		
 		append_failed(url)
-		await send_message(chat_id, f"❌ Failed to forward. See log file for details.", reply_to_message_id=message_id)
 async def failed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	user_id = update.effective_user.id if update.effective_user else None
 	status = get_user_status(user_id)
