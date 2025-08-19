@@ -276,7 +276,7 @@ async def queue_worker():
 		logging.info(f"Processing job: URL={url}, chat_id={chat_id}, message_id={message_id}, batch_id={batch_id}")
 		
 		# Remove from queue_links (first occurrence)
-		for i, (u, _, _, _) in enumerate(queue_links):
+		for i, (u, _, _, _, _) in enumerate(queue_links):
 			if u == url:
 				del queue_links[i]
 				break
