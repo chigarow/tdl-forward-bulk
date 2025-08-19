@@ -179,32 +179,71 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 			return
 
 	# --- NORMAL BOT LOGIC (only for authenticated users) ---
-	url = text
-	# Check for duplicate based on finished.txt, queue.txt, and processing.txt
-	duplicate_status = is_url_processed_anywhere(url)
-	if duplicate_status:
-		if duplicate_status == 'finished':
-			await update.message.reply_text("This link has already been processed.")
-		elif duplicate_status == 'processing':
-			await update.message.reply_text("This link is currently being processed.")
-		elif duplicate_status == 'queue':
-			await update.message.reply_text("This link is already in the queue.")
+	text_lines = text.strip().split('\n')
+	valid_urls = []
+	
+	# Extract valid Telegram URLs from the message
+	for line in text_lines:
+		line = line.strip()
+		if line and ('t.me/' in line or 'telegram.me/' in line):
+			# Basic URL validation for Telegram links
+			if line.startswith('http'):
+				valid_urls.append(line)
+	
+	# If no valid URLs found, treat the entire message as a single URL (backward compatibility)
+	if not valid_urls:
+		valid_urls = [text]
+	
+	# Process each URL
+	added_count = 0
+	duplicate_count = 0
+	duplicate_details = []
+	
+	for url in valid_urls:
+		# Check for duplicate based on finished.txt, queue.txt, and processing.txt
+		duplicate_status = is_url_processed_anywhere(url)
+		if duplicate_status:
+			duplicate_count += 1
+			duplicate_details.append(f"• {normalize_url(url)} ({duplicate_status})")
+			continue
+		
+		# Put job in queue and queue_links, and persist to file
+		job = (url, user, chat_id, message_id)
+		await queue.put(job)
+		queue_links.append(job)
+		with file_lock:
+			append_line(QUEUE_FILE, normalize_url(url))
+		added_count += 1
+	
+	# Provide feedback to user
+	if added_count == 0 and duplicate_count > 0:
+		# All URLs were duplicates
+		if duplicate_count == 1:
+			await update.message.reply_text(f"This link is a duplicate and has already been processed or is in queue.")
 		else:
-			await update.message.reply_text("This link is a duplicate.")
-		return
-
-	# Put job in queue and queue_links, and persist to file
-	job = (url, user, chat_id, message_id)
-	await queue.put(job)
-	queue_links.append(job)
-	with file_lock:
-		append_line(QUEUE_FILE, normalize_url(url))
-	# Feedback logic
-	if current_processing is None and queue.qsize() == 1:
-		await update.message.reply_text("Your link is being processed...")
-	else:
-		position = queue.qsize()
-		await update.message.reply_text(f"Your link is in the queue. Position: {position}")
+			msg = f"All {duplicate_count} links are duplicates:\n" + "\n".join(duplicate_details[:10])
+			if len(duplicate_details) > 10:
+				msg += f"\n... and {len(duplicate_details) - 10} more"
+			await update.message.reply_text(msg)
+	elif added_count > 0:
+		# Some or all URLs were added
+		if duplicate_count == 0:
+			# All URLs were added successfully
+			if added_count == 1:
+				if current_processing is None and queue.qsize() == 1:
+					await update.message.reply_text("Your link is being processed...")
+				else:
+					position = queue.qsize()
+					await update.message.reply_text(f"Your link is in the queue. Position: {position}")
+			else:
+				await update.message.reply_text(f"✅ Added {added_count} links to the queue. Queue position starts at: {queue.qsize() - added_count + 1}")
+		else:
+			# Some URLs added, some duplicates
+			msg = f"✅ Added {added_count} new links to the queue.\n"
+			msg += f"⚠️ Skipped {duplicate_count} duplicates"
+			if duplicate_count <= 5:
+				msg += ":\n" + "\n".join(duplicate_details)
+			await update.message.reply_text(msg)
 
 async def queue_worker():
 	global current_processing, current_progress
