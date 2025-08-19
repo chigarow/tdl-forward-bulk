@@ -136,6 +136,7 @@ def mark_url_processed(url):
 queue = asyncio.Queue()
 queue_links = []  # List of (url, user, chat_id, message_id) for /q, /remove, /clear
 current_processing = None  # (url, user, chat_id, message_id)
+current_progress = None  # Store current progress info (percentage, eta, speed)
 
 # On startup, load queue and processing from files
 def load_persistent_state():
@@ -206,11 +207,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		await update.message.reply_text(f"Your link is in the queue. Position: {position}")
 
 async def queue_worker():
-	global current_processing
+	global current_processing, current_progress
 	while True:
 		job = await queue.get()
 		url, user, chat_id, message_id = job
 		current_processing = job
+		current_progress = None  # Reset progress for new job
 		# Remove from queue_links (first occurrence)
 		for i, (u, _, _, _) in enumerate(queue_links):
 			if u == url:
@@ -231,11 +233,14 @@ async def queue_worker():
 		except Exception as e:
 			logging.error(f"Error processing link: {e}")
 		current_processing = None
+		current_progress = None  # Clear progress when done
 		queue.task_done()
 
 async def process_link(url: str, user: str, chat_id: int, message_id: int):
 	import time as _time
+	import re
 	from telegram import Bot
+	global current_progress
 	start_time = _time.time()
 	# Call tdl CLI asynchronously
 	try:
@@ -254,6 +259,48 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int):
 			output_lines.append(line_str)
 			if "Error" in line_str:
 				error_occurred = True
+			
+			# Log each line for debugging
+			if line_str and ("%" in line_str or "ETA" in line_str or "MB/s" in line_str):
+				logging.info(f"TDL Output Line: {line_str}")
+			
+			# Remove ANSI color codes from the line for cleaner parsing
+			clean_line = re.sub(r'\x1b\[[0-9;]*m', '', line_str)
+			
+			# Extract progress information from tdl output
+			# Pattern 1: Look for percentage, ETA, and speed in the format like "3.0% [...] [...; ~ETA: 8m42s; 5.28 MB/s]"
+			progress_match = re.search(r'(\d+\.?\d*)%.*?ETA:\s*([^;\]]+).*?(\d+\.?\d+\s*[KMGT]?B/s)', clean_line)
+			if progress_match:
+				percentage = progress_match.group(1)
+				eta = progress_match.group(2).strip()
+				speed = progress_match.group(3).strip()
+				current_progress = {
+					'percentage': percentage,
+					'eta': eta,
+					'speed': speed
+				}
+				logging.info(f"Progress update (pattern 1): {percentage}% - ETA: {eta} - Speed: {speed}")
+			else:
+				# Pattern 2: Look for percentage and try to find ETA separately
+				percent_match = re.search(r'(\d+\.?\d*)%', clean_line)
+				if percent_match:
+					percentage = percent_match.group(1)
+					
+					# Look for ETA pattern
+					eta_match = re.search(r'ETA:\s*([^;\]\s]+)', clean_line)
+					eta = eta_match.group(1).strip() if eta_match else "Calculating..."
+					
+					# Look for speed pattern  
+					speed_match = re.search(r'(\d+\.?\d+\s*[KMGT]?B/s)', clean_line)
+					speed = speed_match.group(1).strip() if speed_match else "N/A"
+					
+					current_progress = {
+						'percentage': percentage,
+						'eta': eta,
+						'speed': speed
+					}
+					logging.info(f"Progress update (pattern 2): {percentage}% - ETA: {eta} - Speed: {speed}")
+		
 		await process.wait()
 		output = "\n".join(output_lines)
 	except Exception as e:
@@ -314,7 +361,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	with file_lock:
 		processing = read_lines(PROCESSING_FILE)
 	if processing:
-		await update.message.reply_text(f"Currently processing:\n{processing[0]}")
+		status_msg = f"Currently processing:\n{processing[0]}"
+		if current_progress:
+			status_msg += f"\n\n📊 Progress: {current_progress['percentage']}%"
+			status_msg += f"\n⏱️ ETA: {current_progress['eta']}"
+			status_msg += f"\n🚀 Speed: {current_progress['speed']}"
+		await update.message.reply_text(status_msg)
 	else:
 		await update.message.reply_text("No link under process.")
 
