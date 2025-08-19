@@ -308,6 +308,43 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int):
 		return
 	elapsed = _time.time() - start_time
 
+	# Helper function to format elapsed time in human-readable format
+	def format_elapsed_time(seconds):
+		if seconds < 60:
+			return f"{seconds:.2f} seconds"
+		
+		minutes = int(seconds // 60)
+		remaining_seconds = seconds % 60
+		
+		if minutes < 60:
+			if remaining_seconds < 1:
+				return f"{minutes} minutes"
+			else:
+				return f"{minutes} minutes {remaining_seconds:.1f} seconds"
+		
+		hours = int(minutes // 60)
+		remaining_minutes = minutes % 60
+		
+		if hours < 24:
+			if remaining_minutes == 0 and remaining_seconds < 1:
+				return f"{hours} hours"
+			elif remaining_seconds < 1:
+				return f"{hours} hours {remaining_minutes} minutes"
+			else:
+				return f"{hours} hours {remaining_minutes} minutes {remaining_seconds:.1f} seconds"
+		
+		days = int(hours // 24)
+		remaining_hours = hours % 24
+		
+		if remaining_hours == 0 and remaining_minutes == 0 and remaining_seconds < 1:
+			return f"{days} days"
+		elif remaining_minutes == 0 and remaining_seconds < 1:
+			return f"{days} days {remaining_hours} hours"
+		elif remaining_seconds < 1:
+			return f"{days} days {remaining_hours} hours {remaining_minutes} minutes"
+		else:
+			return f"{days} days {remaining_hours} hours {remaining_minutes} minutes {remaining_seconds:.1f} seconds"
+
 	# Log full output to a file for debugging
 	log_file = f"tdl_forward_log_{datetime.now().strftime('%Y%m%d')}.txt"
 	with open(log_file, "a") as f:
@@ -316,9 +353,10 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int):
 	# Mark as processed if successful
 	if process.returncode == 0 and not error_occurred:
 		human_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+		elapsed_formatted = format_elapsed_time(elapsed)
 		try:
 			await send_message(chat_id,
-				f"✅ Forwarded successfully!\nTime: {human_time}\nElapsed: {elapsed:.2f} seconds",
+				f"✅ Forwarded successfully!\nTime: {human_time}\nElapsed: {elapsed_formatted}",
 				reply_to_message_id=message_id)
 			# Only mark as processed after successfully sending the success message
 			mark_url_processed(url)
