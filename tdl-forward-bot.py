@@ -18,6 +18,9 @@ BOT_TOKEN = config.get('DEFAULT', 'BOT_TOKEN', fallback=None)
 if not BOT_TOKEN:
 	raise RuntimeError('BOT_TOKEN not found in secrets.properties!')
 
+# Admin chat ID for error notifications
+ADMIN_CHAT_ID = config.get('DEFAULT', 'ADMIN_CHAT_ID', fallback=None)
+
 
 # --- FILE-BASED PERSISTENCE ---
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
@@ -268,6 +271,10 @@ async def queue_worker():
 		batch_id = job[4] if len(job) > 4 else None
 		current_processing = job
 		current_progress = None  # Reset progress for new job
+		
+		# Log job details for debugging
+		logging.info(f"Processing job: URL={url}, chat_id={chat_id}, message_id={message_id}, batch_id={batch_id}")
+		
 		# Remove from queue_links (first occurrence)
 		for i, (u, _, _, _) in enumerate(queue_links):
 			if u == url:
@@ -286,7 +293,9 @@ async def queue_worker():
 		try:
 			await process_link(url, user, chat_id, message_id, batch_id)
 		except Exception as e:
-			logging.error(f"Error processing link: {e}")
+			error_msg = f"Error processing link {url}: {e}"
+			logging.error(error_msg)
+			await send_error_to_admin(error_msg)
 		current_processing = None
 		current_progress = None  # Clear progress when done
 		queue.task_done()
@@ -359,6 +368,9 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 		await process.wait()
 		output = "\n".join(output_lines)
 	except Exception as e:
+		error_msg = f"Failed to run tdl for {url}: {e}"
+		logging.error(error_msg)
+		await send_error_to_admin(error_msg)
 		await send_message(chat_id, f"Failed to run tdl: {e}", reply_to_message_id=message_id)
 		return
 	elapsed = _time.time() - start_time
@@ -425,23 +437,39 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 					summary_msg += f"❌ Failed: {batch_info['failed']}\n"
 				summary_msg += f"📊 Total: {batch_info['total']} links"
 				
-				try:
-					await send_message(batch_info['chat_id'], summary_msg, reply_to_message_id=batch_info['message_id'])
-				except Exception as e:
-					logging.error(f"Failed to send bulk summary: {e}")
+				# Validate chat_id before sending
+				if batch_info['chat_id'] and batch_info['chat_id'] != '':
+					try:
+						await send_message(batch_info['chat_id'], summary_msg, reply_to_message_id=batch_info['message_id'])
+					except Exception as e:
+						error_msg = f"Failed to send bulk summary (success): {e}"
+						logging.error(error_msg)
+						await send_error_to_admin(error_msg)
+				else:
+					error_msg = f"Batch summary not sent (success): chat_id is empty for batch {batch_id}"
+					logging.error(error_msg)
+					await send_error_to_admin(error_msg)
 				
 				# Clean up batch tracking
 				del bulk_batches[batch_id]
 		else:
 			# Single link - send individual notification
-			try:
-				await send_message(chat_id,
-					f"✅ Forwarded successfully!\nTime: {human_time}\nElapsed: {elapsed_formatted}",
-					reply_to_message_id=message_id)
-			except Exception as e:
-				logging.error(f"Failed to send success message: {e}")
-				# Don't mark as processed if we couldn't send the success message
-				return
+			# Validate chat_id before sending
+			if chat_id and chat_id != '':
+				try:
+					await send_message(chat_id,
+						f"✅ Forwarded successfully!\nTime: {human_time}\nElapsed: {elapsed_formatted}",
+						reply_to_message_id=message_id)
+				except Exception as e:
+					error_msg = f"Failed to send success message: {e}"
+					logging.error(error_msg)
+					await send_error_to_admin(error_msg)
+					# Don't mark as processed if we couldn't send the success message
+					return
+			else:
+				error_msg = f"Success message not sent: chat_id is empty for URL {url}"
+				logging.error(error_msg)
+				await send_error_to_admin(error_msg)
 		
 		# Only mark as processed after successfully handling notifications
 		mark_url_processed(url)
@@ -460,16 +488,30 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 					summary_msg += f"❌ Failed: {batch_info['failed']}\n"
 				summary_msg += f"📊 Total: {batch_info['total']} links"
 				
-				try:
-					await send_message(batch_info['chat_id'], summary_msg, reply_to_message_id=batch_info['message_id'])
-				except Exception as e:
-					logging.error(f"Failed to send bulk summary: {e}")
+				# Validate chat_id before sending
+				if batch_info['chat_id'] and batch_info['chat_id'] != '':
+					try:
+						await send_message(batch_info['chat_id'], summary_msg, reply_to_message_id=batch_info['message_id'])
+					except Exception as e:
+						error_msg = f"Failed to send bulk summary (failure): {e}"
+						logging.error(error_msg)
+						await send_error_to_admin(error_msg)
+				else:
+					error_msg = f"Batch summary not sent (failure): chat_id is empty for batch {batch_id}"
+					logging.error(error_msg)
+					await send_error_to_admin(error_msg)
 				
 				# Clean up batch tracking
 				del bulk_batches[batch_id]
 		else:
 			# Single link failure notification
-			await send_message(chat_id, f"❌ Failed to forward. See log file for details.", reply_to_message_id=message_id)
+			# Validate chat_id before sending
+			if chat_id and chat_id != '':
+				await send_message(chat_id, f"❌ Failed to forward. See log file for details.", reply_to_message_id=message_id)
+			else:
+				error_msg = f"Failure message not sent: chat_id is empty for URL {url}"
+				logging.error(error_msg)
+				await send_error_to_admin(error_msg)
 		
 		append_failed(url)
 async def failed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -491,8 +533,27 @@ async def failed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Helper to send message from outside handler
 async def send_message(chat_id, text, reply_to_message_id=None):
 	from telegram import Bot
+	
+	# Validate chat_id
+	if not chat_id or chat_id == '':
+		raise ValueError("Chat_id is empty")
+	
 	bot = Bot(BOT_TOKEN)
 	await bot.send_message(chat_id=chat_id, text=text, reply_to_message_id=reply_to_message_id)
+
+# Helper to send error notifications to admin
+async def send_error_to_admin(error_message):
+	if ADMIN_CHAT_ID:
+		try:
+			from telegram import Bot
+			bot = Bot(BOT_TOKEN)
+			timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+			formatted_message = f"🚨 Bot Error [{timestamp}]\n\n{error_message}"
+			await bot.send_message(chat_id=ADMIN_CHAT_ID, text=formatted_message)
+		except Exception as e:
+			logging.error(f"Failed to send error to admin: {e}")
+	else:
+		logging.warning("ADMIN_CHAT_ID not configured - error notifications disabled")
 
 
 # --- COMMANDS ---
@@ -571,6 +632,24 @@ async def empty_finished_command(update: Update, context: ContextTypes.DEFAULT_T
 		clear_file(FINISHED_FILE)
 	await update.message.reply_text(f"Finished list cleared. Removed {count} processed URLs.")
 
+async def set_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	user_id = update.effective_user.id if update.effective_user else None
+	status = get_user_status(user_id)
+	if status != 'authenticated':
+		await update.message.reply_text("🔒 Please enter the password to use this bot.")
+		return
+	
+	# Set the current chat as admin chat for error notifications
+	global ADMIN_CHAT_ID
+	ADMIN_CHAT_ID = update.effective_chat.id
+	
+	# Save to config file
+	config.set('DEFAULT', 'ADMIN_CHAT_ID', str(ADMIN_CHAT_ID))
+	with open(CONFIG_PATH, 'w') as configfile:
+		config.write(configfile)
+	
+	await update.message.reply_text(f"✅ Admin chat set! Error notifications will be sent to this chat.\nChat ID: {ADMIN_CHAT_ID}")
+
 async def delete_link_finished_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	user_id = update.effective_user.id if update.effective_user else None
 	status = get_user_status(user_id)
@@ -603,6 +682,7 @@ def main():
 	app.add_handler(CommandHandler("empty_finished", empty_finished_command))
 	app.add_handler(CommandHandler("delete_link_finished", delete_link_finished_command))
 	app.add_handler(CommandHandler("failed", failed_command))
+	app.add_handler(CommandHandler("set_admin", set_admin_command))
 	logging.info("Bot started. Waiting for messages...")
 
 	# Start the queue worker in the event loop and set bot commands
@@ -615,6 +695,7 @@ def main():
 			("empty_finished", "Clear all processed URLs from finished.txt"),
 			("delete_link_finished", "Remove a specific URL from finished.txt"),
 			("failed", "Show all failed forwards with timestamp (GMT+7)"),
+			("set_admin", "Set current chat as admin for error notifications"),
 		])
 		app.create_task(queue_worker())
 
