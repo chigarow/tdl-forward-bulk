@@ -105,7 +105,19 @@ def clear_file(filename):
 	open(filename, 'w').close()
 
 def normalize_url(url):
-	return url.split(" - ")[0].strip().replace("?single", "")
+	# Normalize a Telegram URL by removing any " - " suffix and stripping the ?single parameter
+	import re
+	if not url:
+		return url
+	# Remove any trailing ' - ...' metadata
+	base = url.split(" - ")[0].strip()
+	# Remove occurrences of '?single' or '?single=...' (and any accidental leftover '?' or '&')
+	# Examples handled: '.../12345?single', '.../12345?single=true', '.../12345?single=&other=1'
+	base = re.sub(r"\?single(?:=[^&]*)?", "", base)
+	# If there are leftover sequences like '?&' or '??' or trailing '&' clean them up
+	base = re.sub(r"[?&]{2,}", "?", base)
+	base = re.sub(r"[?&]$", "", base)
+	return base
 
 
 def is_url_processed_anywhere(url):
@@ -149,13 +161,14 @@ def load_persistent_state():
 		queue_lines = read_lines(QUEUE_FILE)
 	# If processing.txt has a link, process it first
 	if processing_lines:
-		url = processing_lines[0]
+		url = normalize_url(processing_lines[0])
 		queue_links.append((url, '', None, None, None))  # Add None for batch_id
 		queue.put_nowait((url, '', None, None, None))
 	# Then load the rest of the queue
 	for url in queue_lines:
-		queue_links.append((url, '', None, None, None))  # Add None for batch_id
-		queue.put_nowait((url, '', None, None, None))
+		n = normalize_url(url)
+		queue_links.append((n, '', None, None, None))  # Add None for batch_id
+		queue.put_nowait((n, '', None, None, None))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	if not update.message or not update.message.text:
@@ -218,19 +231,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		}
 	
 	for url in valid_urls:
+		# Normalize URL first (remove ?single and similar) then check for duplicates
+		normalized = normalize_url(url)
 		# Check for duplicate based on finished.txt, queue.txt, and processing.txt
-		duplicate_status = is_url_processed_anywhere(url)
+		duplicate_status = is_url_processed_anywhere(normalized)
 		if duplicate_status:
 			duplicate_count += 1
-			duplicate_details.append(f"• {normalize_url(url)} ({duplicate_status})")
+			duplicate_details.append(f"• {normalized} ({duplicate_status})")
 			continue
 		
 		# Put job in queue and queue_links, and persist to file
-		job = (url, user, chat_id, message_id, batch_id)  # Add batch_id to job
+		job = (normalized, user, chat_id, message_id, batch_id)  # use normalized URL in job
 		await queue.put(job)
 		queue_links.append(job)
 		with file_lock:
-			append_line(QUEUE_FILE, normalize_url(url))
+			append_line(QUEUE_FILE, normalized)
 		added_count += 1
 	
 	# Provide feedback to user
@@ -308,8 +323,9 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 	start_time = _time.time()
 	# Call tdl CLI asynchronously
 	try:
+		clean_for_tdl = normalize_url(url)
 		process = await asyncio.create_subprocess_exec(
-			"tdl", "forward", "--from", url.replace("?single", ""),
+			"tdl", "forward", "--from", clean_for_tdl,
 			stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
 		)
 		output_lines = []
