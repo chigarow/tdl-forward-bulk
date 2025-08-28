@@ -597,14 +597,40 @@ async def q_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	if status != 'authenticated':
 		await update.message.reply_text("🔒 Please enter the password to use this bot.")
 		return
+	# Read queue under lock
 	with file_lock:
 		queue_list = read_lines(QUEUE_FILE)
 	if not queue_list:
 		await update.message.reply_text("Queue is empty.")
 		return
-	msg = "Links in queue:\n"
-	for i, url in enumerate(queue_list, 1):
+
+	# Pagination parameters
+	PER_PAGE = 20
+	page = 1
+	# Allow optional page number: /q 2
+	if context.args:
+		try:
+			page = int(context.args[0])
+			if page < 1:
+				page = 1
+		except Exception:
+			page = 1
+
+	total = len(queue_list)
+	total_pages = (total + PER_PAGE - 1) // PER_PAGE
+	if page > total_pages and total_pages > 0:
+		await update.message.reply_text(f"Page {page} out of range. Total pages: {total_pages}.")
+		return
+
+	start_idx = (page - 1) * PER_PAGE
+	end_idx = min(start_idx + PER_PAGE, total)
+	msg = f"Links in queue ({total}) - page {page}/{total_pages}:\n"
+	# enumerate with absolute numbering
+	for i, url in enumerate(queue_list[start_idx:end_idx], start_idx + 1):
 		msg += f"{i}. {url}\n"
+	if total_pages > 1:
+		msg += f"\nUse /q <page> to view other pages. Showing {start_idx+1}–{end_idx} of {total}."
+
 	await update.message.reply_text(msg.strip())
 
 async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
