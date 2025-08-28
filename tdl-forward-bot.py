@@ -429,9 +429,15 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 			return f"{days} days {remaining_hours} hours {remaining_minutes} minutes {remaining_seconds:.1f} seconds"
 
 	# Log full output to a file for debugging
-	log_file = f"tdl_forward_log_{datetime.now().strftime('%Y%m%d')}.txt"
-	with open(log_file, "a") as f:
-		f.write(f"\n{'='*40}\n{datetime.now()}\nURL: {url}\nOutput:\n{output}\n")
+	# Save full output to a daily log file only on errors to avoid huge files.
+	# This prevents creating large log files for every successful forward.
+	if (process.returncode != 0) or error_occurred:
+		log_file = f"tdl_forward_log_{datetime.now().strftime('%Y%m%d')}.txt"
+		with open(log_file, "a") as f:
+			f.write(f"\n{'='*40}\n{datetime.now()}\nURL: {url}\nOutput:\n{output}\n")
+	else:
+		# Do not create/write the daily log for successful runs
+		pass
 
 	# Mark as processed if successful
 	if process.returncode == 0 and not error_occurred:
