@@ -633,6 +633,89 @@ async def q_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 	await update.message.reply_text(msg.strip())
 
+async def finished_url_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	user_id = update.effective_user.id if update.effective_user else None
+	status = get_user_status(user_id)
+	if status != 'authenticated':
+		await update.message.reply_text("🔒 Please enter the password to use this bot.")
+		return
+
+	# Read finished list under lock
+	with file_lock:
+		finished_list = read_lines(FINISHED_FILE)
+	if not finished_list:
+		await update.message.reply_text("No finished URLs.")
+		return
+
+	# We want descending order (newest first). finished.txt appends new entries at the bottom,
+	# so reverse the list to show newest first.
+	finished_desc = list(reversed(finished_list))
+
+	# Pagination
+	PER_PAGE = 20
+	page = 1
+	if context.args:
+		try:
+			page = int(context.args[0])
+			if page < 1:
+				page = 1
+		except Exception:
+			page = 1
+
+	total = len(finished_desc)
+	total_pages = (total + PER_PAGE - 1) // PER_PAGE
+	if page > total_pages and total_pages > 0:
+		await update.message.reply_text(f"Page {page} out of range. Total pages: {total_pages}.")
+		return
+
+	start_idx = (page - 1) * PER_PAGE
+	end_idx = min(start_idx + PER_PAGE, total)
+
+	# Header with total count
+	msg = f"Finished URLs (total: {total}) - page {page}/{total_pages}:\n"
+	for i, url in enumerate(finished_desc[start_idx:end_idx], start_idx + 1):
+		msg += f"{i}. {url}\n"
+	if total_pages > 1:
+		msg += f"\nUse /finished_url <page> to view other pages. Showing {start_idx+1}–{end_idx} of {total}."
+
+	await update.message.reply_text(msg.strip())
+
+async def sanitize_finished_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	"""Normalize and deduplicate entries in data/finished.txt (remove ?single and duplicates).
+	Usage: /sanitize_finished_urls
+	"""
+	user_id = update.effective_user.id if update.effective_user else None
+	status = get_user_status(user_id)
+	if status != 'authenticated':
+		await update.message.reply_text("🔒 Please enter the password to use this bot.")
+		return
+
+	with file_lock:
+		lines = read_lines(FINISHED_FILE)
+		if not lines:
+			await update.message.reply_text("finished.txt is empty.")
+			return
+
+		normalized_list = []
+		seen = set()
+		for line in lines:
+			# attempt to extract URL portion: look for 'http' in line
+			idx = line.find('http')
+			if idx != -1:
+				url_part = line[idx:]
+			else:
+				url_part = line
+			norm = normalize_url(url_part)
+			if norm not in seen:
+				seen.add(norm)
+				normalized_list.append(norm)
+
+		# overwrite finished file with normalized unique entries
+		write_lines(FINISHED_FILE, normalized_list)
+
+	removed = len(lines) - len(normalized_list)
+	await update.message.reply_text(f"Sanitized finished.txt: {len(lines)} -> {len(normalized_list)} entries. Removed {removed} duplicates/normalized lines.")
+
 async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	user_id = update.effective_user.id if update.effective_user else None
 	status = get_user_status(user_id)
@@ -719,6 +802,8 @@ def main():
 	app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 	app.add_handler(CommandHandler("status", status_command))
 	app.add_handler(CommandHandler("q", q_command))
+	app.add_handler(CommandHandler("finished_url", finished_url_command))
+	app.add_handler(CommandHandler("sanitize_finished_urls", sanitize_finished_command))
 	app.add_handler(CommandHandler("remove", remove_command))
 	app.add_handler(CommandHandler("clear", clear_command))
 	app.add_handler(CommandHandler("empty_finished", empty_finished_command))
@@ -732,6 +817,8 @@ def main():
 		await app.bot.set_my_commands([
 			("status", "Show current processing link or idle status"),
 			("q", "Show all links in the queue"),
+			("finished_url", "Show finished URLs (paginated)"),
+			("sanitize_finished_urls", "Normalize and dedupe finished.txt (admin)"),
 			("remove", "Remove a link from the queue by URL"),
 			("clear", "Clear all links from the queue"),
 			("empty_finished", "Clear all processed URLs from finished.txt"),
