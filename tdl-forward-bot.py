@@ -224,7 +224,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		bulk_batches[batch_id] = {
 			'chat_id': chat_id,
 			'message_id': message_id,
-			'total': len(valid_urls),
+			# total will track the number of URLs actually queued (exclude duplicates)
+			'total': 0,
 			'completed': 0,
 			'failed': 0,
 			'user': user
@@ -247,10 +248,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		with file_lock:
 			append_line(QUEUE_FILE, normalized)
 		added_count += 1
+		# If this was part of a bulk submission, increment the actual queued total
+		if batch_id and batch_id in bulk_batches:
+			bulk_batches[batch_id]['total'] += 1
 	
 	# Provide feedback to user
 	if added_count == 0 and duplicate_count > 0:
 		# All URLs were duplicates
+		# If we created a batch for this submission but nothing was queued, remove it
+		if batch_id and batch_id in bulk_batches:
+			del bulk_batches[batch_id]
 		if duplicate_count == 1:
 			await update.message.reply_text(f"This link is a duplicate and has already been processed or is in queue.")
 		else:
