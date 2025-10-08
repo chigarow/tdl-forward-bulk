@@ -1061,15 +1061,12 @@ def main():
 			("failed", "Show all failed forwards (paginated)"),
 			("set_admin", "Set current chat as admin for error notifications"),
 		])
-	
-	async def post_startup(app):
-		"""Start queue worker after application is fully running (fixes PTB warning)"""
+		# Start queue worker immediately after init
 		logging.info("Starting queue worker...")
 		asyncio.create_task(queue_worker())
 		logging.info(f"Queue worker started. Current queue size: {queue.qsize()}")
 	
 	app.post_init = post_init
-	app.post_startup = post_startup
 	app.run_polling()
 
 if __name__ == "__main__":
