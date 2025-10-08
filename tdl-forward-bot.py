@@ -168,6 +168,67 @@ def normalize_url(url):
 	return base
 
 
+def parse_url_range(text):
+	"""
+	Parse URL range syntax: 'https://t.me/channel/100 - https://t.me/channel/110'
+	Returns a list of URLs if a valid range is detected, otherwise returns None.
+	
+	Examples:
+	- 'https://t.me/channel/100 - https://t.me/channel/105' -> ['...100', '...101', '...102', '...103', '...104', '...105']
+	- Single URL or invalid format -> None
+	"""
+	import re
+	
+	# Normalize whitespace around separator (including tabs)
+	text = re.sub(r'\s*-\s*', ' - ', text)
+	
+	if ' - ' not in text:
+		return None
+	
+	parts = text.split(' - ')
+	if len(parts) != 2:
+		return None
+	
+	start_url = parts[0].strip()
+	end_url = parts[1].strip()
+	
+	# Validate both are Telegram URLs
+	if not ('t.me/' in start_url or 'telegram.me/' in start_url):
+		return None
+	if not ('t.me/' in end_url or 'telegram.me/' in end_url):
+		return None
+	
+	# Extract message IDs from both URLs
+	# Pattern: match the last number in the URL
+	start_match = re.search(r'/(\d+)(?:[?#].*)?$', start_url)
+	end_match = re.search(r'/(\d+)(?:[?#].*)?$', end_url)
+	
+	if not start_match or not end_match:
+		return None
+	
+	start_id = int(start_match.group(1))
+	end_id = int(end_match.group(1))
+	
+	# Validate range (start must be <= end)
+	if start_id > end_id:
+		return None
+	
+	# Validate range size (prevent abuse with huge ranges)
+	MAX_RANGE_SIZE = 1000
+	if end_id - start_id + 1 > MAX_RANGE_SIZE:
+		return None
+	
+	# Extract the base URL (everything before the message ID)
+	base_url = start_url[:start_match.start()] + '/'
+	
+	# Generate all URLs in the range
+	url_list = []
+	for msg_id in range(start_id, end_id + 1):
+		url_list.append(f"{base_url}{msg_id}")
+	
+	return url_list
+
+
 def is_url_processed_anywhere(url):
 	normalized_url = normalize_url(url)
 	
@@ -277,13 +338,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	text_lines = text.strip().split('\n')
 	valid_urls = []
 	
-	# Extract valid Telegram URLs from the message
-	for line in text_lines:
-		line = line.strip()
-		if line and ('t.me/' in line or 'telegram.me/' in line):
-			# Basic URL validation for Telegram links
-			if line.startswith('http'):
-				valid_urls.append(line)
+	# First, check if this is a URL range (e.g., "URL1 - URL2")
+	if ' - ' in text and text.count(' - ') == 1:
+		range_urls = parse_url_range(text.strip())
+		if range_urls:
+			valid_urls = range_urls
+			logging.info(f"Range detected: {len(range_urls)} URLs generated from {range_urls[0]} to {range_urls[-1]}")
+	
+	# If not a range, extract valid Telegram URLs from the message
+	if not valid_urls:
+		for line in text_lines:
+			line = line.strip()
+			if line and ('t.me/' in line or 'telegram.me/' in line):
+				# Basic URL validation for Telegram links
+				if line.startswith('http'):
+					valid_urls.append(line)
 	
 	# If no valid URLs found, treat the entire message as a single URL (backward compatibility)
 	if not valid_urls:
@@ -946,9 +1015,13 @@ def main():
 			("failed", "Show all failed forwards (paginated)"),
 			("set_admin", "Set current chat as admin for error notifications"),
 		])
-		app.create_task(queue_worker())
-
+	
+	async def post_startup(app):
+		"""Start queue worker after application is fully running (fixes PTB warning)"""
+		asyncio.create_task(queue_worker())
+	
 	app.post_init = post_init
+	app.post_startup = post_startup
 	app.run_polling()
 
 if __name__ == "__main__":

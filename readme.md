@@ -13,6 +13,7 @@ This project uses the Telegram CLI (`tdl`) to automate the forwarding of message
 ### Telegram Bot (`tdl-forward-bot.py`)
 A fully-featured Telegram bot for managing message forwarding with:
 - **Queue Management**: Add multiple URLs and process them sequentially
+- **URL Range Support**: Send ranges like `https://t.me/channel/100 - https://t.me/channel/110` to auto-generate and queue all messages in the range
 - **Bulk Forwarding**: Submit multiple links at once with batch tracking
 - **Progress Monitoring**: Real-time progress updates with speed and ETA
 - **Duplicate Detection**: Automatic checking against processed, queued, and in-progress URLs
@@ -143,7 +144,17 @@ All Redis functionality is thoroughly tested with 16 unit tests covering:
    REDIS_HOST = 127.0.0.1
    REDIS_PORT = 6379
    REDIS_DB = 0
+   # Logging configuration (optional, defaults shown)
+   LOG_LEVEL = INFO
    ```
+   
+   **Log Levels:**
+   - `DEBUG`: Detailed logs including duplicate checks and all operations (use for troubleshooting)
+   - `INFO`: Standard logs with processing start/end, errors, and important events (recommended)
+   - `WARNING`: Only warnings and errors
+   - `ERROR`: Only errors
+   
+   **Note:** The bot automatically filters out TDL progress output (percentage, ETA, speed) at all log levels to prevent flooding `nohup.out`. You'll only see clean start/completion logs.
    
    b. Get your bot token from [@BotFather](https://t.me/BotFather) on Telegram
    
@@ -173,10 +184,33 @@ The bot provides the easiest and most feature-rich way to forward messages.
 
 3. **Forward messages:**
    - Simply send Telegram URLs to the bot (one or multiple per message)
+   - **URL Range Support**: Send a range like `https://t.me/channel/100 - https://t.me/channel/110` to auto-generate and queue all messages from 100 to 110
    - The bot will queue them and process sequentially
    - Get real-time progress updates with speed and ETA
 
-4. **Available Commands:**
+4. **URL Range Examples:**
+   ```
+   # Single range - generates URLs from 69748 to 69754
+   https://t.me/Meetingroom18/69748 - https://t.me/Meetingroom18/69754
+   
+   # Result: Bot automatically generates and queues:
+   # https://t.me/Meetingroom18/69748
+   # https://t.me/Meetingroom18/69749
+   # https://t.me/Meetingroom18/69750
+   # https://t.me/Meetingroom18/69751
+   # https://t.me/Meetingroom18/69752
+   # https://t.me/Meetingroom18/69753
+   # https://t.me/Meetingroom18/69754
+   ```
+   
+   **Range Limitations:**
+   - Maximum 1000 URLs per range (to prevent abuse)
+   - Start message ID must be ≤ end message ID
+   - Works with both `t.me` and `telegram.me` domains
+   - Supports private chats (`/c/...`) format
+   - Automatic duplicate detection still applies to generated URLs
+
+5. **Available Commands:**
    - `/status` - Show current processing link with progress details
    - `/q [page]` - View queue (paginated, 20 per page)
    - `/finished_url [page]` - View completed forwards (paginated)
@@ -188,7 +222,8 @@ The bot provides the easiest and most feature-rich way to forward messages.
    - `/sanitize_finished_urls` - Normalize and deduplicate finished.txt
    - `/set_admin` - Set current chat for error notifications
 
-5. **Features:**
+6. **Features:**
+   - **URL Range Expansion**: Send `URL1 - URL2` to auto-generate all intermediate URLs
    - Bulk forwarding: Send multiple URLs at once, get summary when done
    - Automatic duplicate detection across queue, processing, and finished lists
    - Progress tracking: Real-time percentage, ETA, and transfer speed
@@ -290,6 +325,60 @@ This script monitors your Android clipboard for Telegram links and automatically
 
 - The scripts log messages to the console. For file-based logging, you can uncomment the `logging.FileHandler` line in the `logging.basicConfig()` setup section of the scripts.
 
+
+## Logging
+
+The bot uses a clean, optimized logging system designed to prevent log file bloat while maintaining essential information for debugging.
+
+### Log Levels
+
+Configure the log level in `secrets.properties`:
+```
+LOG_LEVEL = INFO
+```
+
+Available levels:
+- **DEBUG**: Detailed logs including duplicate checks, Redis operations, and all events (verbose)
+- **INFO** (recommended): Standard logs with processing start/end, errors, and state changes
+- **WARNING**: Only warnings and errors
+- **ERROR**: Only errors
+
+### What Gets Logged
+
+**Always logged (at INFO level):**
+- Bot startup and initialization
+- User authentication events
+- Processing start: `▶ Processing: <url>`
+- Processing completion: `✓ Completed: <url> (took X seconds)`
+- Processing failures: `✗ Failed: <url> (return code: X)`
+- Redis sync operations
+- Errors and exceptions
+
+**Filtered out (to prevent log flooding):**
+- Real-time TDL progress output (percentage, ETA, speed)
+- Individual duplicate checks (logged at DEBUG level only)
+- Every user message (only commands are logged)
+
+### Example Clean Log Output
+
+```
+2025-10-08 15:23:30,100 - INFO: Redis connection established
+2025-10-08 15:23:30,150 - INFO: Redis sync complete: 5000 URLs loaded
+2025-10-08 15:23:30,200 - INFO: Bot started. Waiting for messages...
+2025-10-08 15:23:45,300 - INFO: User authenticated: John (12345)
+2025-10-08 15:24:10,500 - INFO: ▶ Processing: https://t.me/example/123
+2025-10-08 15:26:45,800 - INFO: ✓ Completed: https://t.me/example/123 (took 2 minutes 35 seconds)
+2025-10-08 15:27:00,100 - INFO: ▶ Processing: https://t.me/example/456
+2025-10-08 15:28:30,400 - INFO: ✓ Completed: https://t.me/example/456 (took 1 minute 30 seconds)
+```
+
+### Troubleshooting
+
+If you need more detailed logs for debugging:
+1. Set `LOG_LEVEL = DEBUG` in `secrets.properties`
+2. Restart the bot
+3. Check logs for detailed duplicate checks, Redis operations, and all events
+4. Remember to set back to `INFO` after troubleshooting to avoid log bloat
 
 ## Notes
 
