@@ -88,10 +88,23 @@ def get_user_status(user_id):
 	return users.get(str(user_id), None)
 
 # --- LOGGING ---
+# Set up logging with configurable level (default INFO)
+LOG_LEVEL = config.get('DEFAULT', 'LOG_LEVEL', fallback='INFO').upper()
 logging.basicConfig(
-	level=logging.INFO,
+	level=getattr(logging, LOG_LEVEL, logging.INFO),
 	format='%(asctime)s - %(levelname)s: %(message)s',
 )
+
+# Filter to suppress verbose TDL progress output
+class TDLProgressFilter(logging.Filter):
+	"""Filter out TDL progress lines (percentage, ETA, speed) to reduce log noise"""
+	def filter(self, record):
+		# Suppress TDL progress output lines
+		if 'TDL Output Line:' in record.getMessage():
+			return False
+		return True
+
+logging.getLogger().addFilter(TDLProgressFilter())
 
 def sync_redis_from_finished():
 	"""Synchronize Redis set with URLs from finished.txt"""
@@ -107,9 +120,9 @@ def sync_redis_from_finished():
 			redis_client.sadd(PROCESSED_URLS_KEY, normalized_url)
 		
 		url_count = redis_client.scard(PROCESSED_URLS_KEY)
-		logging.info(f"Synchronized {url_count} URLs to Redis from finished.txt")
+		logging.info(f"Redis sync complete: {url_count} URLs loaded")
 	except Exception as e:
-		logging.error(f"Error syncing Redis from finished.txt: {e}")
+		logging.error(f"Redis sync failed: {e}")
 
 
 
@@ -162,10 +175,10 @@ def is_url_processed_anywhere(url):
 	if redis_available:
 		try:
 			if redis_client.sismember(PROCESSED_URLS_KEY, normalized_url):
-				logging.info(f"Duplicate check (Redis): {normalized_url} found in Redis cache (already processed)")
+				logging.debug(f"Duplicate found (Redis): {normalized_url}")
 				return 'finished'
 		except Exception as e:
-			logging.warning(f"Redis check failed, falling back to file: {e}")
+			logging.warning(f"Redis check failed: {e}")
 	
 	# Fallback to file-based check
 	with file_lock:
@@ -174,15 +187,16 @@ def is_url_processed_anywhere(url):
 		processing = set(read_lines(PROCESSING_FILE))
 	
 	if normalized_url in finished:
-		logging.info(f"Duplicate check: {normalized_url} found in finished.txt (already processed)")
+		logging.debug(f"Duplicate found (finished): {normalized_url}")
 		return 'finished'
 	if normalized_url in processing:
-		logging.info(f"Duplicate check: {normalized_url} is currently being processed (processing.txt)")
+		logging.debug(f"Duplicate found (processing): {normalized_url}")
 		return 'processing'
 	if normalized_url in queue:
-		logging.info(f"Duplicate check: {normalized_url} is in the queue (queue.txt)")
+		logging.debug(f"Duplicate found (queue): {normalized_url}")
 		return 'queue'
-	logging.info(f"Duplicate check: {normalized_url} is new (not processed, not in queue)")
+	# Only log at DEBUG level for new URLs to reduce noise
+	logging.debug(f"New URL accepted: {normalized_url}")
 	return None
 
 
@@ -193,9 +207,9 @@ def mark_url_processed(url):
 	if redis_available:
 		try:
 			redis_client.sadd(PROCESSED_URLS_KEY, normalized_url)
-			logging.info(f"Marked URL as processed in Redis: {normalized_url}")
+			logging.debug(f"Redis: URL marked processed")
 		except Exception as e:
-			logging.warning(f"Failed to mark URL in Redis: {e}")
+			logging.warning(f"Redis update failed: {e}")
 	
 	# Always update file-based system as fallback
 	with file_lock:
@@ -239,7 +253,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	chat_id = update.effective_chat.id if update.effective_chat else None
 	message_id = update.message.message_id if update.message else None
 	text = update.message.text.strip()
-	logging.info(f"Received from {user} ({user_id}): {text}")
+	# Only log authentication attempts and commands, not all messages
+	if text.startswith('/'):
+		logging.info(f"Command from {user} ({user_id}): {text}")
 
 	# --- AUTHENTICATION CHECK ---
 	status = get_user_status(user_id)
@@ -249,6 +265,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		# If user is not authenticated, check if they are trying to enter password
 		if PASSWORD and text == PASSWORD:
 			set_user_status(user_id, 'authenticated')
+			logging.info(f"User authenticated: {user} ({user_id})")
 			await update.message.reply_text("✅ You are now authenticated! You can use the bot.")
 			return
 		else:
@@ -355,8 +372,8 @@ async def queue_worker():
 		current_processing = job
 		current_progress = None  # Reset progress for new job
 		
-		# Log job details for debugging
-		logging.info(f"Processing job: URL={url}, chat_id={chat_id}, message_id={message_id}, batch_id={batch_id}")
+		# Log processing start
+		logging.info(f"▶ Processing: {url}")
 		
 		# Remove from queue_links (first occurrence)
 		for i, (u, _, _, _, _) in enumerate(queue_links):
@@ -410,15 +427,12 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 			output_lines.append(line_str)
 			if "Error" in line_str:
 				error_occurred = True
-			
-			# Log each line for debugging
-			if line_str and ("%" in line_str or "ETA" in line_str or "MB/s" in line_str):
-				logging.info(f"TDL Output Line: {line_str}")
+				logging.error(f"TDL Error: {line_str}")
 			
 			# Remove ANSI color codes from the line for cleaner parsing
 			clean_line = re.sub(r'\x1b\[[0-9;]*m', '', line_str)
 			
-			# Extract progress information from tdl output
+			# Extract progress information from tdl output (but don't log it)
 			# Pattern 1: Look for percentage, ETA, and speed in the format like "3.0% [...] [...; ~ETA: 8m42s; 5.28 MB/s]"
 			progress_match = re.search(r'(\d+\.?\d*)%.*?ETA:\s*([^;\]]+).*?(\d+\.?\d+\s*[KMGT]?B/s)', clean_line)
 			if progress_match:
@@ -430,7 +444,6 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 					'eta': eta,
 					'speed': speed
 				}
-				logging.info(f"Progress update (pattern 1): {percentage}% - ETA: {eta} - Speed: {speed}")
 			else:
 				# Pattern 2: Look for percentage and try to find ETA separately
 				percent_match = re.search(r'(\d+\.?\d*)%', clean_line)
@@ -450,7 +463,6 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 						'eta': eta,
 						'speed': speed
 					}
-					logging.info(f"Progress update (pattern 2): {percentage}% - ETA: {eta} - Speed: {speed}")
 		
 		await process.wait()
 		output = "\n".join(output_lines)
@@ -514,6 +526,7 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 	if process.returncode == 0 and not error_occurred:
 		human_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 		elapsed_formatted = format_elapsed_time(elapsed)
+		logging.info(f"✓ Completed: {url} (took {elapsed_formatted})")
 		
 		# Handle bulk vs single link notifications
 		if batch_id and batch_id in bulk_batches:
@@ -568,6 +581,7 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 		mark_url_processed(url)
 	else:
 		# Handle failures
+		logging.error(f"✗ Failed: {url} (return code: {process.returncode})")
 		if batch_id and batch_id in bulk_batches:
 			bulk_batches[batch_id]['failed'] += 1
 			
