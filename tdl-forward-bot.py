@@ -427,6 +427,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		with file_lock:
 			append_line(QUEUE_FILE, normalized)
 		added_count += 1
+		logging.info(f"Added to queue: {normalized} (queue size now: {queue.qsize()})")
 		# If this was part of a bulk submission, increment the actual queued total
 		if batch_id and batch_id in bulk_batches:
 			bulk_batches[batch_id]['total'] += 1
@@ -1063,7 +1064,9 @@ def main():
 	
 	async def post_startup(app):
 		"""Start queue worker after application is fully running (fixes PTB warning)"""
+		logging.info("Starting queue worker...")
 		asyncio.create_task(queue_worker())
+		logging.info(f"Queue worker started. Current queue size: {queue.qsize()}")
 	
 	app.post_init = post_init
 	app.post_startup = post_startup
