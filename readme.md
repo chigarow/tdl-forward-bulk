@@ -185,10 +185,11 @@ The bot provides the easiest and most feature-rich way to forward messages.
 3. **Forward messages:**
    - Simply send Telegram URLs to the bot (one or multiple per message)
    - **URL Range Support**: Send a range like `https://t.me/channel/100 - https://t.me/channel/110` to auto-generate and queue all messages from 100 to 110
+   - **Mixed Input Support**: Combine ranges and individual URLs in a single message
    - The bot will queue them and process sequentially
-   - Get real-time progress updates with speed and ETA
+   - Get real-time progress updates with speed and ETA (logged every 15 seconds)
 
-4. **URL Range Examples:**
+4. **URL Range and Mixed Input Examples:**
    ```
    # Single range - generates URLs from 69748 to 69754
    https://t.me/Meetingroom18/69748 - https://t.me/Meetingroom18/69754
@@ -201,6 +202,24 @@ The bot provides the easiest and most feature-rich way to forward messages.
    # https://t.me/Meetingroom18/69752
    # https://t.me/Meetingroom18/69753
    # https://t.me/Meetingroom18/69754
+   
+   # Mixed input - ranges and individual URLs in one message
+   https://t.me/Meetingroom18/69748 - https://t.me/Meetingroom18/69826
+   https://t.me/Meetingroom18/69848?single
+   https://t.me/Meetingroom18/69854
+   https://t.me/Meetingroom18/69858
+   
+   # Result: Bot processes:
+   # - All URLs from 69748 to 69826 (79 URLs from range)
+   # - Plus 3 individual URLs (69848, 69854, 69858)
+   # - Total: 82 URLs in queue, all normalized (no ?single)
+   
+   # Multiple ranges in one message
+   https://t.me/channel/10 - https://t.me/channel/15
+   https://t.me/channel/20 - https://t.me/channel/25
+   https://t.me/channel/100
+   
+   # Result: Generates 6 URLs from first range, 6 from second, plus 1 individual = 13 total
    ```
    
    **Range Limitations:**
@@ -224,9 +243,11 @@ The bot provides the easiest and most feature-rich way to forward messages.
 
 6. **Features:**
    - **URL Range Expansion**: Send `URL1 - URL2` to auto-generate all intermediate URLs
+   - **Mixed Input Support**: Combine multiple ranges and individual URLs in a single message
+   - **Periodic Progress Logging**: Progress (percentage, ETA, speed) logged every 15 seconds at INFO level
    - Bulk forwarding: Send multiple URLs at once, get summary when done
    - Automatic duplicate detection across queue, processing, and finished lists
-   - Progress tracking: Real-time percentage, ETA, and transfer speed
+   - Progress tracking: Real-time percentage, ETA, and transfer speed via `/status` command
    - Persistent queue: Survives bot restarts
    - Performance optimized: 16 threads, unlimited DC pool (2-5 MB/s typical)
 
@@ -349,15 +370,18 @@ Available levels:
 - Bot startup and initialization
 - User authentication events
 - Processing start: `▶ Processing: <url>`
+- **Periodic progress updates**: `📊 Progress: X% | ⏱️ ETA: Xm | 🚀 Speed: X MB/s` (logged every 15 seconds during transfers)
 - Processing completion: `✓ Completed: <url> (took X seconds)`
 - Processing failures: `✗ Failed: <url> (return code: X)`
 - Redis sync operations
 - Errors and exceptions
 
 **Filtered out (to prevent log flooding):**
-- Real-time TDL progress output (percentage, ETA, speed)
+- Real-time TDL progress output lines (raw percentage updates from TDL every second)
 - Individual duplicate checks (logged at DEBUG level only)
 - Every user message (only commands are logged)
+
+**Note**: Progress information (percentage, ETA, speed) is logged periodically (every 15 seconds) to provide visibility into long-running transfers without flooding logs. You can also use `/status` command in the bot to see real-time progress at any time.
 
 ### Example Clean Log Output
 
@@ -367,9 +391,13 @@ Available levels:
 2025-10-08 15:23:30,200 - INFO: Bot started. Waiting for messages...
 2025-10-08 15:23:45,300 - INFO: User authenticated: John (12345)
 2025-10-08 15:24:10,500 - INFO: ▶ Processing: https://t.me/example/123
-2025-10-08 15:26:45,800 - INFO: ✓ Completed: https://t.me/example/123 (took 2 minutes 35 seconds)
-2025-10-08 15:27:00,100 - INFO: ▶ Processing: https://t.me/example/456
-2025-10-08 15:28:30,400 - INFO: ✓ Completed: https://t.me/example/456 (took 1 minute 30 seconds)
+2025-10-08 15:24:25,500 - INFO: 📊 Progress: 15.2% | ⏱️ ETA: 1m30s | 🚀 Speed: 1.85 MB/s
+2025-10-08 15:24:40,500 - INFO: 📊 Progress: 35.8% | ⏱️ ETA: 1m05s | 🚀 Speed: 2.05 MB/s
+2025-10-08 15:24:55,500 - INFO: 📊 Progress: 58.3% | ⏱️ ETA: 45s | 🚀 Speed: 2.13 MB/s
+2025-10-08 15:25:10,500 - INFO: 📊 Progress: 82.1% | ⏱️ ETA: 20s | 🚀 Speed: 2.18 MB/s
+2025-10-08 15:25:25,800 - INFO: ✓ Completed: https://t.me/example/123 (took 1 minute 15 seconds)
+2025-10-08 15:25:30,100 - INFO: ▶ Processing: https://t.me/example/456
+2025-10-08 15:26:30,400 - INFO: ✓ Completed: https://t.me/example/456 (took 1 minute)
 ```
 
 ### Troubleshooting

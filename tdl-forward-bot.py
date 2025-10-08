@@ -366,21 +366,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	text_lines = text.strip().split('\n')
 	valid_urls = []
 	
-	# First, check if this is a URL range (e.g., "URL1 - URL2")
-	if ' - ' in text and text.count(' - ') == 1:
-		range_urls = parse_url_range(text.strip())
-		if range_urls:
-			valid_urls = range_urls
-			logging.info(f"Range detected: {len(range_urls)} URLs generated from {range_urls[0]} to {range_urls[-1]}")
-	
-	# If not a range, extract valid Telegram URLs from the message
-	if not valid_urls:
-		for line in text_lines:
-			line = line.strip()
-			if line and ('t.me/' in line or 'telegram.me/' in line):
-				# Basic URL validation for Telegram links
-				if line.startswith('http'):
-					valid_urls.append(line)
+	# Process each line - could be a range or individual URL
+	for line in text_lines:
+		line = line.strip()
+		if not line:
+			continue
+		
+		# Check if this line is a URL range (e.g., "URL1 - URL2")
+		if ' - ' in line:
+			range_urls = parse_url_range(line)
+			if range_urls:
+				valid_urls.extend(range_urls)
+				logging.info(f"Range detected: {len(range_urls)} URLs generated from {range_urls[0]} to {range_urls[-1]}")
+				continue
+		
+		# Not a range, check if it's a valid Telegram URL
+		if 't.me/' in line or 'telegram.me/' in line:
+			# Basic URL validation for Telegram links
+			if line.startswith('http'):
+				valid_urls.append(line)
 	
 	# If no valid URLs found, treat the entire message as a single URL (backward compatibility)
 	if not valid_urls:
@@ -503,6 +507,7 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 	from telegram import Bot
 	global current_progress
 	start_time = _time.time()
+	last_log_time = start_time  # Track last progress log time
 	# Call tdl CLI asynchronously with optimized performance flags
 	try:
 		clean_for_tdl = normalize_url(url)
@@ -529,7 +534,7 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 			# Remove ANSI color codes from the line for cleaner parsing
 			clean_line = re.sub(r'\x1b\[[0-9;]*m', '', line_str)
 			
-			# Extract progress information from tdl output (but don't log it)
+			# Extract progress information from tdl output
 			# Pattern 1: Look for percentage, ETA, and speed in the format like "3.0% [...] [...; ~ETA: 8m42s; 5.28 MB/s]"
 			progress_match = re.search(r'(\d+\.?\d*)%.*?ETA:\s*([^;\]]+).*?(\d+\.?\d+\s*[KMGT]?B/s)', clean_line)
 			if progress_match:
@@ -541,6 +546,12 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 					'eta': eta,
 					'speed': speed
 				}
+				
+				# Log progress periodically (every 15 seconds)
+				current_time = _time.time()
+				if current_time - last_log_time >= 15.0:
+					logging.info(f"📊 Progress: {percentage}% | ⏱️ ETA: {eta} | 🚀 Speed: {speed}")
+					last_log_time = current_time
 			else:
 				# Pattern 2: Look for percentage and try to find ETA separately
 				percent_match = re.search(r'(\d+\.?\d*)%', clean_line)
@@ -560,6 +571,12 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 						'eta': eta,
 						'speed': speed
 					}
+					
+					# Log progress periodically (every 15 seconds)
+					current_time = _time.time()
+					if current_time - last_log_time >= 15.0:
+						logging.info(f"📊 Progress: {percentage}% | ⏱️ ETA: {eta} | 🚀 Speed: {speed}")
+						last_log_time = current_time
 		
 		await process.wait()
 		output = "\n".join(output_lines)
