@@ -557,9 +557,34 @@ async def failed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	if not failed_list:
 		await update.message.reply_text("No failed forwards.")
 		return
-	msg = "Failed forwards (latest on bottom):\n"
-	for line in failed_list:
-		msg += f"{line}\n"
+	
+	# Pagination parameters
+	PER_PAGE = 20
+	page = 1
+	# Allow optional page number: /failed 2
+	if context.args:
+		try:
+			page = int(context.args[0])
+			if page < 1:
+				page = 1
+		except Exception:
+			page = 1
+	
+	total = len(failed_list)
+	total_pages = (total + PER_PAGE - 1) // PER_PAGE
+	if page > total_pages and total_pages > 0:
+		await update.message.reply_text(f"Page {page} out of range. Total pages: {total_pages}.")
+		return
+	
+	start_idx = (page - 1) * PER_PAGE
+	end_idx = min(start_idx + PER_PAGE, total)
+	
+	msg = f"Failed forwards (total: {total}) - page {page}/{total_pages}:\n"
+	for i, line in enumerate(failed_list[start_idx:end_idx], start_idx + 1):
+		msg += f"{i}. {line}\n"
+	if total_pages > 1:
+		msg += f"\nUse /failed <page> to view other pages. Showing {start_idx+1}–{end_idx} of {total}."
+	
 	await update.message.reply_text(msg.strip())
 
 # Helper to send message from outside handler
@@ -839,7 +864,7 @@ def main():
 			("clear", "Clear all links from the queue"),
 			("empty_finished", "Clear all processed URLs from finished.txt"),
 			("delete_link_finished", "Remove a specific URL from finished.txt"),
-			("failed", "Show all failed forwards with timestamp (GMT+7)"),
+			("failed", "Show all failed forwards (paginated)"),
 			("set_admin", "Set current chat as admin for error notifications"),
 		])
 		app.create_task(queue_worker())
