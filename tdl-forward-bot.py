@@ -16,8 +16,8 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'secrets.properties')
 config = configparser.ConfigParser()
 config.read(CONFIG_PATH)
 BOT_TOKEN = config.get('DEFAULT', 'BOT_TOKEN', fallback=None)
-if not BOT_TOKEN:
-	raise RuntimeError('BOT_TOKEN not found in secrets.properties!')
+# Do not raise at import time to keep module importable during tests.
+# main() will validate BOT_TOKEN before running the bot.
 
 # Admin chat ID for error notifications
 ADMIN_CHAT_ID = config.get('DEFAULT', 'ADMIN_CHAT_ID', fallback=None)
@@ -90,10 +90,7 @@ def get_user_status(user_id):
 # --- LOGGING ---
 # Set up logging with configurable level (default INFO)
 LOG_LEVEL = config.get('DEFAULT', 'LOG_LEVEL', fallback='INFO').upper()
-logging.basicConfig(
-	level=getattr(logging, LOG_LEVEL, logging.INFO),
-	format='%(asctime)s - %(levelname)s: %(message)s',
-)
+
 
 # Filter to suppress verbose TDL progress output
 class TDLProgressFilter(logging.Filter):
@@ -104,7 +101,38 @@ class TDLProgressFilter(logging.Filter):
 			return False
 		return True
 
-logging.getLogger().addFilter(TDLProgressFilter())
+
+def setup_logging(level: str | None = None):
+	"""Configure root logger with human-readable timestamps.
+
+	- level: optional string level like 'DEBUG' or 'INFO'. If omitted uses
+	  the LOG_LEVEL from config.
+	- Uses datefmt '%Y-%m-%d %H:%M:%S %z' (e.g. '2025-10-08 14:23:12 +0700')
+	"""
+	# Determine numeric level
+	chosen = (level or LOG_LEVEL).upper()
+	lvl = getattr(logging, chosen, logging.INFO)
+
+	root = logging.getLogger()
+	# Remove existing handlers to avoid duplicate output during tests/imports
+	for h in list(root.handlers):
+		root.removeHandler(h)
+
+	handler = logging.StreamHandler()
+	datefmt = '%Y-%m-%d %H:%M:%S %z'
+	formatter = logging.Formatter('%(asctime)s - %(levelname)s: %(message)s', datefmt=datefmt)
+	handler.setFormatter(formatter)
+
+	root.setLevel(lvl)
+	root.addHandler(handler)
+
+	# Ensure our TDL filter is attached (avoid duplicate filters)
+	if not any(isinstance(f, TDLProgressFilter) for f in root.filters):
+		root.addFilter(TDLProgressFilter())
+
+
+# Initialize logging on import so tests and modules have a sensible default.
+setup_logging(LOG_LEVEL)
 
 def sync_redis_from_finished():
 	"""Synchronize Redis set with URLs from finished.txt"""
