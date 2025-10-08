@@ -7,6 +7,7 @@ from datetime import datetime
 import os
 import configparser
 import asyncio
+import redis
 
 
 
@@ -20,6 +21,22 @@ if not BOT_TOKEN:
 
 # Admin chat ID for error notifications
 ADMIN_CHAT_ID = config.get('DEFAULT', 'ADMIN_CHAT_ID', fallback=None)
+
+# Redis connection and configuration
+REDIS_HOST = config.get('DEFAULT', 'REDIS_HOST', fallback='127.0.0.1')
+REDIS_PORT = config.getint('DEFAULT', 'REDIS_PORT', fallback=6379)
+REDIS_DB = config.getint('DEFAULT', 'REDIS_DB', fallback=0)
+PROCESSED_URLS_KEY = "tdl:bot:processed_urls"
+
+# Initialize Redis client
+try:
+	redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
+	redis_client.ping()  # Test connection
+	redis_available = True
+	logging.info("Redis connection established")
+except (redis.ConnectionError, redis.exceptions.ConnectionError) as e:
+	redis_available = False
+	logging.warning(f"Redis connection failed - falling back to file-based tracking: {e}")
 
 
 # --- FILE-BASED PERSISTENCE ---
@@ -76,6 +93,24 @@ logging.basicConfig(
 	format='%(asctime)s - %(levelname)s: %(message)s',
 )
 
+def sync_redis_from_finished():
+	"""Synchronize Redis set with URLs from finished.txt"""
+	if not redis_available:
+		return
+	
+	try:
+		with file_lock:
+			finished_urls = read_lines(FINISHED_FILE)
+		
+		for url in finished_urls:
+			normalized_url = normalize_url(url)
+			redis_client.sadd(PROCESSED_URLS_KEY, normalized_url)
+		
+		url_count = redis_client.scard(PROCESSED_URLS_KEY)
+		logging.info(f"Synchronized {url_count} URLs to Redis from finished.txt")
+	except Exception as e:
+		logging.error(f"Error syncing Redis from finished.txt: {e}")
+
 
 
 # --- FILE-BASED PERSISTENCE ---
@@ -122,10 +157,22 @@ def normalize_url(url):
 
 def is_url_processed_anywhere(url):
 	normalized_url = normalize_url(url)
+	
+	# Check Redis first if available (faster than file I/O)
+	if redis_available:
+		try:
+			if redis_client.sismember(PROCESSED_URLS_KEY, normalized_url):
+				logging.info(f"Duplicate check (Redis): {normalized_url} found in Redis cache (already processed)")
+				return 'finished'
+		except Exception as e:
+			logging.warning(f"Redis check failed, falling back to file: {e}")
+	
+	# Fallback to file-based check
 	with file_lock:
 		finished = set(read_lines(FINISHED_FILE))
 		queue = set(read_lines(QUEUE_FILE))
 		processing = set(read_lines(PROCESSING_FILE))
+	
 	if normalized_url in finished:
 		logging.info(f"Duplicate check: {normalized_url} found in finished.txt (already processed)")
 		return 'finished'
@@ -141,6 +188,16 @@ def is_url_processed_anywhere(url):
 
 def mark_url_processed(url):
 	normalized_url = normalize_url(url)
+	
+	# Update Redis if available
+	if redis_available:
+		try:
+			redis_client.sadd(PROCESSED_URLS_KEY, normalized_url)
+			logging.info(f"Marked URL as processed in Redis: {normalized_url}")
+		except Exception as e:
+			logging.warning(f"Failed to mark URL in Redis: {e}")
+	
+	# Always update file-based system as fallback
 	with file_lock:
 		append_line(FINISHED_FILE, normalized_url)
 		clear_file(PROCESSING_FILE)
@@ -156,6 +213,10 @@ bulk_batches = {}  # Track bulk submissions: {batch_id: {chat_id, message_id, to
 
 # On startup, load queue and processing from files
 def load_persistent_state():
+	# Sync Redis from finished.txt on startup
+	if redis_available:
+		sync_redis_from_finished()
+	
 	with file_lock:
 		processing_lines = read_lines(PROCESSING_FILE)
 		queue_lines = read_lines(QUEUE_FILE)
