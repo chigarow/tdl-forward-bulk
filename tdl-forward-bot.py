@@ -551,6 +551,7 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 				# Log progress periodically (every 15 seconds)
 				current_time = _time.time()
 				if current_time - last_log_time >= 15.0:
+					logging.info(f"▶ Processing: {url}")
 					logging.info(f"📊 Progress: {percentage}% | ⏱️ ETA: {eta} | 🚀 Speed: {speed}")
 					last_log_time = current_time
 			else:
@@ -576,6 +577,9 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 					# Log progress periodically (every 15 seconds)
 					current_time = _time.time()
 					if current_time - last_log_time >= 15.0:
+						# Debug: Log raw line to understand TDL output format
+						logging.debug(f"TDL raw: {clean_line}")
+						logging.info(f"▶ Processing: {url}")
 						logging.info(f"📊 Progress: {percentage}% | ⏱️ ETA: {eta} | 🚀 Speed: {speed}")
 						last_log_time = current_time
 		
