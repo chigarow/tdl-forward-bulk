@@ -328,11 +328,14 @@ async def process_link(url: str, user: str, chat_id: int, message_id: int, batch
 	from telegram import Bot
 	global current_progress
 	start_time = _time.time()
-	# Call tdl CLI asynchronously
+	# Call tdl CLI asynchronously with optimized performance flags
 	try:
 		clean_for_tdl = normalize_url(url)
 		process = await asyncio.create_subprocess_exec(
-			"tdl", "forward", "--from", clean_for_tdl,
+			"tdl", 
+			"-t", "16",      # Max threads for transfer (increased from default 4)
+			"--pool", "0",  # DC pool size (increased from default 8)
+			"forward", "--from", clean_for_tdl,
 			stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
 		)
 		output_lines = []
