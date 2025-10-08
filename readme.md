@@ -1,20 +1,32 @@
 # Telegram CLI Forwarder
 
-This project uses the Telegram CLI (`tdl`) to automate the forwarding of messages from a specific Telegram channel or chat via command-line interface (CLI). It offers three main scripts for different forwarding tasks: `py-tdl-forward.py`, `py-tdl-forward-iterate.py`, and `termux-put-into-url-forward.py`.
+This project uses the Telegram CLI (`tdl`) to automate the forwarding of messages from a specific Telegram channel or chat via command-line interface (CLI). It includes both Python scripts for manual forwarding and a Telegram bot (`tdl-forward-bot.py`) for automated queue-based forwarding.
 
 
 ## Features
 
+### Python Scripts
 - **`py-tdl-forward.py`**: Processes a list of URLs from a file (`url-forward.txt`) and forwards them one by one.
 - **`py-tdl-forward-iterate.py`**: Iterates through a range of message numbers from a base URL and forwards them automatically.
 - **`termux-put-into-url-forward.py`**: Android script for Termux that monitors clipboard for Telegram links and adds them to your forwarding list.
+
+### Telegram Bot (`tdl-forward-bot.py`)
+A fully-featured Telegram bot for managing message forwarding with:
+- **Queue Management**: Add multiple URLs and process them sequentially
+- **Bulk Forwarding**: Submit multiple links at once with batch tracking
+- **Progress Monitoring**: Real-time progress updates with speed and ETA
+- **Duplicate Detection**: Automatic checking against processed, queued, and in-progress URLs
+- **User Authentication**: Password-protected access
+- **Admin Notifications**: Error alerts sent to configured admin chat
+- **Persistent State**: Queue survives bot restarts
+- **Performance Optimized**: Uses 16 threads and unlimited DC pool for maximum speed (2-5 MB/s)
 
 
 ## Requirements
 
 - Python 3.6+
-- `tdl` (Telegram CLI)
-- The Python package `psutil`
+- `tdl` (Telegram CLI) - [Installation Guide](https://docs.iyear.me/tdl/)
+- Python packages: `psutil`, `python-telegram-bot`
 - For Android: Termux and Termux:API
 
 
@@ -43,22 +55,82 @@ This project uses the Telegram CLI (`tdl`) to automate the forwarding of message
 
          .\venv\Scripts\activate
 
+   - On Android (Termux):
+
+         source venv/bin/activate
+
 4. **Install the required dependencies:**
 
    After activating the virtual environment, install the required Python packages by running:
 
        pip install -r requirements.txt
 
-   The only dependency currently listed is `psutil`.
-
 5. **Install the Telegram CLI (tdl):**
 
-   Make sure you have `tdl` installed on your system. Follow the installation instructions from the [official tdl documentation](https://github.com/vysheng/tg).
+   Make sure you have `tdl` installed on your system. Follow the installation instructions from the [official tdl documentation](https://docs.iyear.me/tdl/).
+
+6. **Configure the Telegram Bot (Optional):**
+
+   If you want to use the bot interface:
+   
+   a. Create a `secrets.properties` file in the project directory:
+   ```
+   [DEFAULT]
+   BOT_TOKEN = your_telegram_bot_token_here
+   PASSWORD = your_bot_password_here
+   ADMIN_CHAT_ID = your_telegram_chat_id_for_errors
+   ```
+   
+   b. Get your bot token from [@BotFather](https://t.me/BotFather) on Telegram
+   
+   c. Set a password for user authentication
+   
+   d. Use `/set_admin` command in the bot to configure admin notifications
 
 
 ## Usage
 
-There are three scripts you can use, depending on your needs:
+There are multiple ways to use this project:
+
+
+### 0. Using the Telegram Bot (Recommended)
+
+The bot provides the easiest and most feature-rich way to forward messages.
+
+1. **Start the bot:**
+   ```bash
+   python3 tdl-forward-bot.py
+   ```
+
+2. **Authenticate:**
+   - Send the password you configured in `secrets.properties` to the bot
+   - You'll see: "✅ You are now authenticated! You can use the bot."
+
+3. **Forward messages:**
+   - Simply send Telegram URLs to the bot (one or multiple per message)
+   - The bot will queue them and process sequentially
+   - Get real-time progress updates with speed and ETA
+
+4. **Available Commands:**
+   - `/status` - Show current processing link with progress details
+   - `/q [page]` - View queue (paginated, 20 per page)
+   - `/finished_url [page]` - View completed forwards (paginated)
+   - `/failed [page]` - View failed forwards with timestamps (paginated)
+   - `/remove <url>` - Remove a specific URL from queue
+   - `/clear` - Clear entire queue
+   - `/empty_finished` - Clear finished URLs list
+   - `/delete_link_finished <url>` - Remove specific URL from finished list
+   - `/sanitize_finished_urls` - Normalize and deduplicate finished.txt
+   - `/set_admin` - Set current chat for error notifications
+
+5. **Features:**
+   - Bulk forwarding: Send multiple URLs at once, get summary when done
+   - Automatic duplicate detection across queue, processing, and finished lists
+   - Progress tracking: Real-time percentage, ETA, and transfer speed
+   - Persistent queue: Survives bot restarts
+   - Performance optimized: 16 threads, unlimited DC pool (2-5 MB/s typical)
+
+   Note: The `/failed` command shows the newest failed entries first (newest on page 1). Use `/failed <page>` to navigate older failures. This ordering is intentional to make it easier to spot recent problems quickly.
 
 
 ### 1. Forwarding URLs from a file (`py-tdl-forward.py`)
