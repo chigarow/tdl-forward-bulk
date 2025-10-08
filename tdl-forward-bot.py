@@ -557,7 +557,11 @@ async def failed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	if not failed_list:
 		await update.message.reply_text("No failed forwards.")
 		return
-	
+
+	# Show newest entries first: failed.txt appends new entries at the bottom,
+	# so reverse the list so the latest failures appear on page 1.
+	failed_list = list(reversed(failed_list))
+
 	# Pagination parameters
 	PER_PAGE = 20
 	page = 1
