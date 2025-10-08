@@ -131,10 +131,6 @@ All Redis functionality is thoroughly tested with 16 unit tests covering:
 
 7. **Configure the Telegram Bot (Optional):**
 
-   Make sure you have `tdl` installed on your system. Follow the installation instructions from the [official tdl documentation](https://docs.iyear.me/tdl/).
-
-7. **Configure the Telegram Bot (Optional):**
-
    If you want to use the bot interface:
    
    a. Create a `secrets.properties` file in the project directory:
@@ -159,7 +155,7 @@ All Redis functionality is thoroughly tested with 16 unit tests covering:
 
    Make sure you have `tdl` installed on your system. Follow the installation instructions from the [official tdl documentation](https://docs.iyear.me/tdl/).
 
-There are multiple ways to use this project:
+## Usage
 
 
 ### 0. Using the Telegram Bot (Recommended)
