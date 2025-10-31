@@ -27,6 +27,8 @@ REDIS_HOST = config.get('DEFAULT', 'REDIS_HOST', fallback='127.0.0.1')
 REDIS_PORT = config.getint('DEFAULT', 'REDIS_PORT', fallback=6379)
 REDIS_DB = config.getint('DEFAULT', 'REDIS_DB', fallback=0)
 PROCESSED_URLS_KEY = "tdl:bot:processed_urls"
+TERMUX_HOME = "/data/data/com.termux/files/home"
+RESTART_SCRIPT_NAME = "restart-extract-compressed-files.sh"
 
 # Initialize Redis client
 try:
@@ -996,6 +998,53 @@ async def empty_finished_command(update: Update, context: ContextTypes.DEFAULT_T
 		clear_file(FINISHED_FILE)
 	await update.message.reply_text(f"Finished list cleared. Removed {count} processed URLs.")
 
+async def restart_extract_service_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	user_id = update.effective_user.id if update.effective_user else None
+	status = get_user_status(user_id)
+	if status != 'authenticated':
+		await update.message.reply_text("🔒 Please enter the password to use this bot.")
+		return
+
+	wait_msg = await update.message.reply_text("♻️ Restarting extract-compressed-files service...")
+	command = "./" + RESTART_SCRIPT_NAME
+	try:
+		process = await asyncio.create_subprocess_exec(
+			command,
+			"--force",
+			stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.PIPE,
+			cwd=TERMUX_HOME
+		)
+		stdout_bytes, stderr_bytes = await process.communicate()
+		stdout_text = stdout_bytes.decode().strip()
+		stderr_text = stderr_bytes.decode().strip()
+
+		if process.returncode == 0:
+			response = "✅ Service restarted successfully."
+			if stdout_text:
+				response += f"\n\n📝 Output:\n{stdout_text[:1500]}"
+			await wait_msg.edit_text(response)
+			logging.info("Restart script executed successfully")
+		else:
+			response = f"❌ Restart script exited with code {process.returncode}."
+			if stdout_text:
+				response += f"\n\n📝 Output:\n{stdout_text[:1500]}"
+			if stderr_text:
+				response += f"\n\n⚠️ Errors:\n{stderr_text[:1500]}"
+			await wait_msg.edit_text(response)
+			logging.error(f"Restart script failed (code {process.returncode}) - stdout: {stdout_text} stderr: {stderr_text}")
+			await send_error_to_admin(f"Restart script failed with code {process.returncode}.\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
+	except FileNotFoundError:
+		msg = f"❌ Script not found at {TERMUX_HOME}/{RESTART_SCRIPT_NAME}"
+		await wait_msg.edit_text(msg)
+		logging.error(msg)
+		await send_error_to_admin(msg)
+	except Exception as e:
+		msg = f"❌ Unexpected error running restart script: {e}"
+		await wait_msg.edit_text(msg)
+		logging.exception("Unexpected error running restart script")
+		await send_error_to_admin(msg)
+
 async def set_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	user_id = update.effective_user.id if update.effective_user else None
 	status = get_user_status(user_id)
@@ -1046,6 +1095,7 @@ def main():
 	app.add_handler(CommandHandler("remove", remove_command))
 	app.add_handler(CommandHandler("clear", clear_command))
 	app.add_handler(CommandHandler("empty_finished", empty_finished_command))
+	app.add_handler(CommandHandler("restart_extract_compressed_files_service", restart_extract_service_command))
 	app.add_handler(CommandHandler("delete_link_finished", delete_link_finished_command))
 	app.add_handler(CommandHandler("failed", failed_command))
 	app.add_handler(CommandHandler("set_admin", set_admin_command))
@@ -1061,6 +1111,7 @@ def main():
 			("remove", "Remove a link from the queue by URL"),
 			("clear", "Clear all links from the queue"),
 			("empty_finished", "Clear all processed URLs from finished.txt"),
+			("restart_extract_compressed_files_service", "Restart the extract-compressed-files Termux service"),
 			("delete_link_finished", "Remove a specific URL from finished.txt"),
 			("failed", "Show all failed forwards (paginated)"),
 			("set_admin", "Set current chat as admin for error notifications"),
@@ -1075,4 +1126,3 @@ def main():
 
 if __name__ == "__main__":
 	main()
-
