@@ -8,6 +8,7 @@ import os
 import configparser
 import asyncio
 import redis
+import re
 
 
 
@@ -29,6 +30,7 @@ REDIS_DB = config.getint('DEFAULT', 'REDIS_DB', fallback=0)
 PROCESSED_URLS_KEY = "tdl:bot:processed_urls"
 TERMUX_HOME = "/data/data/com.termux/files/home"
 RESTART_SCRIPT_NAME = "restart-extract-compressed-files.sh"
+EXTRACT_SERVICE_PROCESS = "extract-compressed-files.py"
 
 # Initialize Redis client
 try:
@@ -196,6 +198,13 @@ def normalize_url(url):
 	base = re.sub(r"[?&]{2,}", "?", base)
 	base = re.sub(r"[?&]$", "", base)
 	return base
+
+ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-9;]*[A-Za-z]")
+
+def strip_ansi(text: str) -> str:
+	if not text:
+		return text
+	return ANSI_ESCAPE_RE.sub("", text)
 
 
 def parse_url_range(text):
@@ -1016,13 +1025,42 @@ async def restart_extract_service_command(update: Update, context: ContextTypes.
 			cwd=TERMUX_HOME
 		)
 		stdout_bytes, stderr_bytes = await process.communicate()
-		stdout_text = stdout_bytes.decode().strip()
-		stderr_text = stderr_bytes.decode().strip()
+		stdout_text = strip_ansi(stdout_bytes.decode().strip())
+		stderr_text = strip_ansi(stderr_bytes.decode().strip())
+
+		service_status_msg = ""
 
 		if process.returncode == 0:
-			response = "✅ Service restarted successfully."
+			# Verify process is running for additional assurance
+			try:
+				check_proc = await asyncio.create_subprocess_exec(
+					"pgrep",
+					"-f",
+					EXTRACT_SERVICE_PROCESS,
+					stdout=asyncio.subprocess.PIPE,
+					stderr=asyncio.subprocess.PIPE,
+					cwd=TERMUX_HOME
+				)
+				check_stdout, check_stderr = await check_proc.communicate()
+				check_stdout_text = strip_ansi(check_stdout.decode().strip())
+				check_stderr_text = strip_ansi(check_stderr.decode().strip())
+				if check_proc.returncode == 0 and check_stdout_text:
+					pids = ", ".join(check_stdout_text.splitlines())
+					service_status_msg = f"\n\n🟢 Service process detected (PID(s): {pids})"
+				else:
+					if check_stderr_text:
+						service_status_msg = f"\n\n⚠️ Unable to confirm service status: {check_stderr_text[:600]}"
+					else:
+						service_status_msg = "\n\n⚠️ Service process not detected. Check manually."
+			except FileNotFoundError:
+				service_status_msg = "\n\n⚠️ `pgrep` command not available; unable to auto-check status."
+			except Exception as check_exc:
+				service_status_msg = f"\n\n⚠️ Failed to verify service status: {check_exc}"
+
+			response = "✅ Service restart command executed successfully."
 			if stdout_text:
-				response += f"\n\n📝 Output:\n{stdout_text[:1500]}"
+				response += f"\n\n📝 Script output:\n{stdout_text[:1500]}"
+			response += service_status_msg
 			await wait_msg.edit_text(response)
 			logging.info("Restart script executed successfully")
 		else:
