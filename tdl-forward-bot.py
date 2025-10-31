@@ -1095,7 +1095,7 @@ def main():
 	app.add_handler(CommandHandler("remove", remove_command))
 	app.add_handler(CommandHandler("clear", clear_command))
 	app.add_handler(CommandHandler("empty_finished", empty_finished_command))
-	app.add_handler(CommandHandler("restart_extract_compressed_files_service", restart_extract_service_command))
+	app.add_handler(CommandHandler("restart_extract_service", restart_extract_service_command))
 	app.add_handler(CommandHandler("delete_link_finished", delete_link_finished_command))
 	app.add_handler(CommandHandler("failed", failed_command))
 	app.add_handler(CommandHandler("set_admin", set_admin_command))
@@ -1111,7 +1111,7 @@ def main():
 			("remove", "Remove a link from the queue by URL"),
 			("clear", "Clear all links from the queue"),
 			("empty_finished", "Clear all processed URLs from finished.txt"),
-			("restart_extract_compressed_files_service", "Restart the extract-compressed-files Termux service"),
+			("restart_extract_service", "Restart the extract-compressed-files Termux service"),
 			("delete_link_finished", "Remove a specific URL from finished.txt"),
 			("failed", "Show all failed forwards (paginated)"),
 			("set_admin", "Set current chat as admin for error notifications"),
