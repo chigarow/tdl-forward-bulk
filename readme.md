@@ -22,6 +22,7 @@ A fully-featured Telegram bot for managing message forwarding with:
 - **Admin Notifications**: Error alerts sent to configured admin chat
 - **Persistent State**: Queue survives bot restarts
 - **Performance Optimized**: Uses 16 threads and unlimited DC pool for maximum speed (2-5 MB/s)
+- **Service Management**: Termux-friendly `/restart_extract_service` command that restarts the extract service, surfaces script output, verifies running PIDs, and times out safely if the script hangs
 
 ### Redis Integration Benefits
 
@@ -240,6 +241,7 @@ The bot provides the easiest and most feature-rich way to forward messages.
    - `/delete_link_finished <url>` - Remove specific URL from finished list
    - `/sanitize_finished_urls` - Normalize and deduplicate finished.txt
    - `/set_admin` - Set current chat for error notifications
+   - `/restart_extract_service` - Run the Termux restart script with timeout handling and post-run status checks
 
 6. **Features:**
    - **URL Range Expansion**: Send `URL1 - URL2` to auto-generate all intermediate URLs

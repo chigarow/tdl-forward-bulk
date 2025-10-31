@@ -31,6 +31,7 @@ PROCESSED_URLS_KEY = "tdl:bot:processed_urls"
 TERMUX_HOME = "/data/data/com.termux/files/home"
 RESTART_SCRIPT_NAME = "restart-extract-compressed-files.sh"
 EXTRACT_SERVICE_PROCESS = "extract-compressed-files.py"
+RESTART_TIMEOUT_SECONDS = 300
 
 # Initialize Redis client
 try:
@@ -205,6 +206,10 @@ def strip_ansi(text: str) -> str:
 	if not text:
 		return text
 	return ANSI_ESCAPE_RE.sub("", text)
+
+
+async def communicate_with_timeout(process: asyncio.subprocess.Process, timeout: float):
+	return await asyncio.wait_for(process.communicate(), timeout)
 
 
 def parse_url_range(text):
@@ -1022,9 +1027,27 @@ async def restart_extract_service_command(update: Update, context: ContextTypes.
 			"--force",
 			stdout=asyncio.subprocess.PIPE,
 			stderr=asyncio.subprocess.PIPE,
+			stdin=asyncio.subprocess.DEVNULL,
 			cwd=TERMUX_HOME
 		)
-		stdout_bytes, stderr_bytes = await process.communicate()
+		try:
+			stdout_bytes, stderr_bytes = await communicate_with_timeout(process, RESTART_TIMEOUT_SECONDS)
+		except asyncio.TimeoutError:
+			process.kill()
+			stdout_bytes, stderr_bytes = await process.communicate()
+			timeout_msg = "⏱️ Restart command timed out and was forcefully stopped."
+			logging.error(timeout_msg)
+			response = timeout_msg
+			stdout_text = strip_ansi(stdout_bytes.decode().strip())
+			stderr_text = strip_ansi(stderr_bytes.decode().strip())
+			if stdout_text:
+				response += f"\n\n📝 Partial output before timeout:\n{stdout_text[:1500]}"
+			if stderr_text:
+				response += f"\n\n⚠️ Errors before timeout:\n{stderr_text[:1500]}"
+			await wait_msg.edit_text(response)
+			await send_error_to_admin(f"{timeout_msg}\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
+			return
+
 		stdout_text = strip_ansi(stdout_bytes.decode().strip())
 		stderr_text = strip_ansi(stderr_bytes.decode().strip())
 
