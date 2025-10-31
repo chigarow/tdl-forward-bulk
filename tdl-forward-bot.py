@@ -1020,91 +1020,98 @@ async def restart_extract_service_command(update: Update, context: ContextTypes.
 		return
 
 	wait_msg = await update.message.reply_text("♻️ Restarting extract-compressed-files service...")
-	command = "./" + RESTART_SCRIPT_NAME
-	try:
-		process = await asyncio.create_subprocess_exec(
-			command,
-			"--force",
-			stdout=asyncio.subprocess.PIPE,
-			stderr=asyncio.subprocess.PIPE,
-			stdin=asyncio.subprocess.DEVNULL,
-			cwd=TERMUX_HOME
-		)
+
+	async def _run_restart_sequence(message):
+		command = "./" + RESTART_SCRIPT_NAME
 		try:
-			stdout_bytes, stderr_bytes = await communicate_with_timeout(process, RESTART_TIMEOUT_SECONDS)
-		except asyncio.TimeoutError:
-			process.kill()
-			stdout_bytes, stderr_bytes = await process.communicate()
-			timeout_msg = "⏱️ Restart command timed out and was forcefully stopped."
-			logging.error(timeout_msg)
-			response = timeout_msg
+			process = await asyncio.create_subprocess_exec(
+				command,
+				"--force",
+				stdout=asyncio.subprocess.PIPE,
+				stderr=asyncio.subprocess.PIPE,
+				stdin=asyncio.subprocess.DEVNULL,
+				cwd=TERMUX_HOME
+			)
+			try:
+				stdout_bytes, stderr_bytes = await communicate_with_timeout(process, RESTART_TIMEOUT_SECONDS)
+			except asyncio.TimeoutError:
+				process.kill()
+				stdout_bytes, stderr_bytes = await process.communicate()
+				timeout_msg = "⏱️ Restart command timed out and was forcefully stopped."
+				logging.error(timeout_msg)
+				response = timeout_msg
+				stdout_text = strip_ansi(stdout_bytes.decode().strip())
+				stderr_text = strip_ansi(stderr_bytes.decode().strip())
+				if stdout_text:
+					response += f"\n\n📝 Partial output before timeout:\n{stdout_text[:1500]}"
+				if stderr_text:
+					response += f"\n\n⚠️ Errors before timeout:\n{stderr_text[:1500]}"
+				await message.edit_text(response)
+				await send_error_to_admin(f"{timeout_msg}\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
+				return
+
 			stdout_text = strip_ansi(stdout_bytes.decode().strip())
 			stderr_text = strip_ansi(stderr_bytes.decode().strip())
-			if stdout_text:
-				response += f"\n\n📝 Partial output before timeout:\n{stdout_text[:1500]}"
-			if stderr_text:
-				response += f"\n\n⚠️ Errors before timeout:\n{stderr_text[:1500]}"
-			await wait_msg.edit_text(response)
-			await send_error_to_admin(f"{timeout_msg}\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
-			return
 
-		stdout_text = strip_ansi(stdout_bytes.decode().strip())
-		stderr_text = strip_ansi(stderr_bytes.decode().strip())
+			service_status_msg = ""
 
-		service_status_msg = ""
-
-		if process.returncode == 0:
-			# Verify process is running for additional assurance
-			try:
-				check_proc = await asyncio.create_subprocess_exec(
-					"pgrep",
-					"-f",
-					EXTRACT_SERVICE_PROCESS,
-					stdout=asyncio.subprocess.PIPE,
-					stderr=asyncio.subprocess.PIPE,
-					cwd=TERMUX_HOME
-				)
-				check_stdout, check_stderr = await check_proc.communicate()
-				check_stdout_text = strip_ansi(check_stdout.decode().strip())
-				check_stderr_text = strip_ansi(check_stderr.decode().strip())
-				if check_proc.returncode == 0 and check_stdout_text:
-					pids = ", ".join(check_stdout_text.splitlines())
-					service_status_msg = f"\n\n🟢 Service process detected (PID(s): {pids})"
-				else:
-					if check_stderr_text:
-						service_status_msg = f"\n\n⚠️ Unable to confirm service status: {check_stderr_text[:600]}"
+			if process.returncode == 0:
+				# Verify process is running for additional assurance
+				try:
+					check_proc = await asyncio.create_subprocess_exec(
+						"pgrep",
+						"-f",
+						EXTRACT_SERVICE_PROCESS,
+						stdout=asyncio.subprocess.PIPE,
+						stderr=asyncio.subprocess.PIPE,
+						cwd=TERMUX_HOME
+					)
+					check_stdout, check_stderr = await check_proc.communicate()
+					check_stdout_text = strip_ansi(check_stdout.decode().strip())
+					check_stderr_text = strip_ansi(check_stderr.decode().strip())
+					if check_proc.returncode == 0 and check_stdout_text:
+						pids = ", ".join(check_stdout_text.splitlines())
+						service_status_msg = f"\n\n🟢 Service process detected (PID(s): {pids})"
 					else:
-						service_status_msg = "\n\n⚠️ Service process not detected. Check manually."
-			except FileNotFoundError:
-				service_status_msg = "\n\n⚠️ `pgrep` command not available; unable to auto-check status."
-			except Exception as check_exc:
-				service_status_msg = f"\n\n⚠️ Failed to verify service status: {check_exc}"
+						if check_stderr_text:
+							service_status_msg = f"\n\n⚠️ Unable to confirm service status: {check_stderr_text[:600]}"
+						else:
+							service_status_msg = "\n\n⚠️ Service process not detected. Check manually."
+				except FileNotFoundError:
+					service_status_msg = "\n\n⚠️ `pgrep` command not available; unable to auto-check status."
+				except Exception as check_exc:
+					service_status_msg = f"\n\n⚠️ Failed to verify service status: {check_exc}"
 
-			response = "✅ Service restart command executed successfully."
-			if stdout_text:
-				response += f"\n\n📝 Script output:\n{stdout_text[:1500]}"
-			response += service_status_msg
-			await wait_msg.edit_text(response)
-			logging.info("Restart script executed successfully")
-		else:
-			response = f"❌ Restart script exited with code {process.returncode}."
-			if stdout_text:
-				response += f"\n\n📝 Output:\n{stdout_text[:1500]}"
-			if stderr_text:
-				response += f"\n\n⚠️ Errors:\n{stderr_text[:1500]}"
-			await wait_msg.edit_text(response)
-			logging.error(f"Restart script failed (code {process.returncode}) - stdout: {stdout_text} stderr: {stderr_text}")
-			await send_error_to_admin(f"Restart script failed with code {process.returncode}.\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
-	except FileNotFoundError:
-		msg = f"❌ Script not found at {TERMUX_HOME}/{RESTART_SCRIPT_NAME}"
-		await wait_msg.edit_text(msg)
-		logging.error(msg)
-		await send_error_to_admin(msg)
-	except Exception as e:
-		msg = f"❌ Unexpected error running restart script: {e}"
-		await wait_msg.edit_text(msg)
-		logging.exception("Unexpected error running restart script")
-		await send_error_to_admin(msg)
+				response = "✅ Service restart command executed successfully."
+				if stdout_text:
+					response += f"\n\n📝 Script output:\n{stdout_text[:1500]}"
+				response += service_status_msg
+				await message.edit_text(response)
+				logging.info("Restart script executed successfully")
+			else:
+				response = f"❌ Restart script exited with code {process.returncode}."
+				if stdout_text:
+					response += f"\n\n📝 Output:\n{stdout_text[:1500]}"
+				if stderr_text:
+					response += f"\n\n⚠️ Errors:\n{stderr_text[:1500]}"
+				await message.edit_text(response)
+				logging.error(f"Restart script failed (code {process.returncode}) - stdout: {stdout_text} stderr: {stderr_text}")
+				await send_error_to_admin(f"Restart script failed with code {process.returncode}.\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
+		except FileNotFoundError:
+			msg = f"❌ Script not found at {TERMUX_HOME}/{RESTART_SCRIPT_NAME}"
+			await message.edit_text(msg)
+			logging.error(msg)
+			await send_error_to_admin(msg)
+		except Exception as e:
+			msg = f"❌ Unexpected error running restart script: {e}"
+			try:
+				await message.edit_text(msg)
+			except Exception:
+				pass
+			logging.exception("Unexpected error running restart script")
+			await send_error_to_admin(msg)
+
+	asyncio.create_task(_run_restart_sequence(wait_msg))
 
 async def set_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	user_id = update.effective_user.id if update.effective_user else None
